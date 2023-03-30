@@ -1,5 +1,6 @@
 FLYE_OPT = "-t 4"
 BWA_OPT = "-t 4"
+MINIMAP_OPT = "-t 4"
 BLASTN_OPT = "-evalue 1e-5 -num_alignments 10000 -num_threads 4"
 
 # run flye assembler on nanopore data
@@ -66,6 +67,17 @@ rule quastShort:
     shell:
         """
         perl -0777 -ne 'print "{wildcards.assembly} "; die unless /Total length \(>= 0 bp\)\s+(\d+)\s/; printf "Total %.1fM", $1/1e6; die unless /\# contigs \(>= 0 bp\)\s+(\d+)\s/; printf " contigs %d", $1; die unless /\# contigs \(>= 50000 bp\)\s+(\d+)\s/; printf " (%d >=50kb)", $1; die unless /Largest contig\s+(\d+)\s/; printf " longest %.0fkb", $1/1e3; die unless /N50\s+(\d+)\s/; printf " N50 %.0fkb", $1/1e3; die unless /\sGC \(\%\)\s+(\S+)\s/; printf " GC %.1f%%\n", $1; ' {input}  > {output}
+        """
+
+# chromosome sizes
+rule sizes:
+    input:
+        "{assembly}.fa"
+    output:
+        "{assembly}.sizes"
+    shell:
+        """
+	faSize -detailed {input} > {output}
         """
 
 # compare two assemblies
@@ -149,7 +161,7 @@ rule Nanopore_minimap_bam:
         
     shell:
         """
-        minimap2 -a -x map-ont --secondary=no -t 4 {input.fa} {input.fastq} | samtools view -S -b - | samtools sort - -o {output.bam}
+        minimap2 -a -x map-ont --secondary=no {MINIMAP_OPT} {input.fa} {input.fastq} | samtools view -S -b - | samtools sort - -o {output.bam}
     	samtools index {output.bam}
         """
 
@@ -163,3 +175,45 @@ rule Nanopore_bedgraph:
         """
         bedgraph genomecov -ibam {input.bam} -bga -split {output.cov}
         """    
+
+# nanopore aligned by minimap with paf format
+rule Nanopore_minimap_paf:
+    input:
+         fa="{genome}.fa", fastq="{reads}-N.fastq.gz"
+    output:
+         paf="{genome}-{reads}-N.paf"
+        
+    shell:
+        """
+        minimap2 -c -x map-ont --secondary=no {MINIMAP_OPT} {input.fa} {input.fastq} > {output.paf}
+        """
+
+
+# read connections between contigs
+rule Nanopore_connections:
+    input:
+         fa="{genome}.fa", view="{genome}-{reads}-N.paf.view"
+    output:
+         "{genome}-{reads}-N.pairs"        
+    shell:
+        """
+        sort -k 3,3 -k5,5g {input.view} > {output}.tmp1
+        perl -lane 'die unless @F==11; if($o ne $F[2]) {{ $n=0; $o=$F[2]; }} if($F[1] eq "-") {{ @F[8,9]=@F[9,8]; }} print join("\t", $F[2]. "_" . $n, "R", @F[6,8,1]); print join("\t", $F[2]. "_" . ($n+1), "L", @F[6,9,1]); $n++;' {output}.tmp1 > {output}.tmp2
+	sort -k1,1 {output}.tmp2 > {output}.tmp3
+        join {output}.tmp3 {output}.tmp3  > {output}.tmp4
+	perl -lane 'die unless @F==9; if($F[1] eq "L" && $F[5] eq "R") {{ print  join("\t", @F[0,2,3,4,6,7,8]); }}' {output}.tmp4 > {output}
+	rm {output}.tmp[1234]
+        """
+
+# group and count read connections between contigs in windows
+rule Nanopore_connections_size:
+    input:
+         "{name}-N.pairs"
+    output:
+         "{name}-N.pairs{size}kb"  
+    shell:
+       """
+       perl -lane '$x={wildcards.size}*1000; $F[2]=int($F[2]/$x)*$x; $F[5]=int($F[5]/$x)*$x; print join("\t", @F[1..6])' {input} > {output}.tmp
+       sort {output}.tmp | uniq -c | sort -k1gr > {output}
+       rm {output}.tmp
+       """
