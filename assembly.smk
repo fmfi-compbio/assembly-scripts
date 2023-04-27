@@ -2,6 +2,7 @@ FLYE_OPT = "-t 4"
 BWA_OPT = "-t 4"
 MINIMAP_OPT = "-t 4"
 BLASTN_OPT = "-evalue 1e-5 -num_alignments 10000 -num_threads 4"
+SAMPLE_SEED = 42
 
 # run flye assembler on nanopore data
 rule flye:
@@ -90,6 +91,19 @@ rule asm_minimap:
         """
         minimap2 -x asm20 -c {input.fa1} {input.fa2} > {output}
         """
+
+# sometimes snakemake does not correctly split the filename
+# into two parts - help via special rule with ALN in the middle
+rule asm_minimap2:
+    input:
+        fa1="{asm1}.fa", fa2="{asm2}.fa"
+    output:
+        "{asm1}-ALN-{asm2}.paf"
+    shell:
+        """
+        minimap2 -x asm20 -c {input.fa1} {input.fa2} > {output}
+        """
+
 
 # compare assembly to itself, skip trivial self-alignments
 rule asm_minimap_self:
@@ -216,4 +230,14 @@ rule Nanopore_connections_size:
        perl -lane '$x={wildcards.size}*1000; $F[2]=int($F[2]/$x)*$x; $F[5]=int($F[5]/$x)*$x; print join("\t", @F[1..6])' {input} > {output}.tmp
        sort {output}.tmp | uniq -c | sort -k1gr > {output}
        rm {output}.tmp
+       """
+
+rule nanopore_sample:
+    input:
+         "{name}-N.fastq.gz"
+    output:
+         "{name}-sample-{minsize}kb-{frac}-N.fastq.gz"  
+    shell:
+       """
+       zcat {input} | perl -ne 'BEGIN {{ srand({SAMPLE_SEED}); }} $s.=$_; if($.%4==0) {{ if(length($_)>{wildcards.minsize}*1000 && rand(1)<{wildcards.frac}) {{ print $s; }} $s=""; }}' | gzip -c > {output}
        """
