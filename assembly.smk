@@ -3,6 +3,7 @@ BWA_OPT = "-t 4"
 MINIMAP_OPT = "-t 4"
 BLASTN_OPT = "-evalue 1e-5 -num_alignments 10000 -num_threads 4"
 SAMPLE_SEED = 42
+SCRIPT_PATH = "/opt/assembly-scripts"
 
 # run flye assembler on nanopore data
 rule flye:
@@ -250,4 +251,15 @@ rule fastq_gz_to_fasta:
     shell:
        """
        zcat {input} | perl -lane 'if($.%4==1) {{ $F[0]=~s/^@//; print ">$F[0]"; }} if($.%4==2) {{ print $_; }} ' > {output}
+       """
+
+# manual assembly
+rule manual_assembly:
+    input:
+         fa="{name}-fasta.list", regions="{name}-regions.list"
+    output:
+         fa="{name}.fa", joins="{name}-joins.list"
+    shell:
+       """
+       {SCRIPT_PATH}/manual_assembly.pl -j {output.joins} {input.fa} {input.regions} > {output.fa}
        """
