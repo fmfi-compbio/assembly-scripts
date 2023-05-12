@@ -202,7 +202,6 @@ rule Nanopore_minimap_paf:
         minimap2 -c -x map-ont --secondary=no {MINIMAP_OPT} {input.fa} {input.fastq} > {output.paf}
         """
 
-
 # read connections between contigs
 rule Nanopore_connections:
     input:
@@ -240,4 +239,15 @@ rule nanopore_sample:
     shell:
        """
        zcat {input} | perl -ne 'BEGIN {{ srand({SAMPLE_SEED}); }} $s.=$_; if($.%4==0) {{ if(length($_)>{wildcards.minsize}*1000 && rand(1)<{wildcards.frac}) {{ print $s; }} $s=""; }}' | gzip -c > {output}
+       """
+
+# convert reads to fasta
+rule fastq_gz_to_fasta:
+    input:
+         "{name}.fastq.gz"
+    output:
+         "{name}.fa"
+    shell:
+       """
+       zcat {input} | perl -lane 'if($.%4==1) {{ $F[0]=~s/^@//; print ">$F[0]"; }} if($.%4==2) {{ print $_; }} ' > {output}
        """
