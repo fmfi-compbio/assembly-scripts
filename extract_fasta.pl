@@ -46,6 +46,7 @@ if(!defined $name) {
 
 my $bed = join("\t", $contig, $start, $end, $name, 0, $strand);
 
-my $run = "echo \"$bed\" | bedtools getfasta -fi \"$fasta\" -bed stdin -fo stdout -s -name";
+my $run = "echo \"$bed\" | bedtools getfasta -fi \"$fasta\" -bed stdin -fo stdout -s -name | perl -ne 's/\\([+-]\\\)\$//; print'";
+print STDERR $run, "\n";
 my $ret = system($run);
 exit $ret;

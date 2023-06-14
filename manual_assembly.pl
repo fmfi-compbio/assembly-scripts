@@ -3,6 +3,7 @@
 use strict;
 use Getopt::Std;
 use File::Temp qw/tempdir/;
+use Data::Dumper;
 
 # import shared.pm from script directory
 use FindBin qw($Bin);  #$Bin is the directory with the script
@@ -13,26 +14,27 @@ use shared;
 my $USAGE = "
 $0 [options] fasta_list region_list > output.fa
 
-Region list is a file with 5 columns whitespace spearated
+Region list is a file with 5 whitespace separated columns 
 0: old_contig_name, 1:start, 2:end, 3:strand, 4:new_name
-If a new contig consists of several parts, they have the same name in the last column and should be adjacent
+If a new contig consists of several parts, they have the same name in the last column 
+and should be on adjacent lines.
 The file may contain also empty lines and comment lines starting with #
 
 Beware: currently no checks if old contigs exists, are unique and sufficiently long (TODO)
 
 Options
--b filename   Output filename with join positions
+-j filename   Output file with join positions to be used for checking the result
 ";
 
 my %Options;
-getopts('b:', \%Options);
+getopts('j:', \%Options);
 
 # check arguments
 die $USAGE unless @ARGV==2;
 my ($fasta_list, $region_list) = @ARGV;
-my $bed_file;
-if (exists $Options{'b'}) {
-    $bed_file = $Options{'b'}
+my $joins_file;
+if (exists $Options{'j'}) {
+    $joins_file = $Options{'j'}
 }
 foreach my $f ($fasta_list, $region_list) {
     die "cannot find '$f'" unless -r $f;
@@ -41,11 +43,32 @@ foreach my $f ($fasta_list, $region_list) {
 my $dir = tempdir( CLEANUP => 1 );
 print STDERR "Temp dir $dir\n";
 
+# read the list of fasta files, check that they exist
+my @fasta;
+my $in;
+open $in, "<", $fasta_list or die;
+while(my $line = <$in>) {
+    $line =~ s/\s+$//;
+    $line =~ s/^\s+//;
+    die "missing fasta $line" unless -r $line;
+    push @fasta, $line;
+}
+close $in or die;
+
+# create concatenated fasta
+my_run("cat " . join(" ", @fasta) . " > $dir/tmp1.fa");
+
+# index fasta, check sequences
+my_run("samtools faidx $dir/tmp1.fa");
+#!!!!!!
+
+
+
 # reformat region_list to a proper bed file
 # check that names are unique, add suffix _CONT to each contig continuation
-my %names;
+my %names; # for each name list of cummulative lengths
 my $prev_name;
-my $in;
+my $len = 0;
 open $in, "<", $region_list or die;
 my $out;
 open $out, ">", "$dir/regions.bed" or die;
@@ -61,29 +84,30 @@ while(my $line = <$in>) {
     die "new contig names cannot end in _CONT" if $name =~ /_CONT$/;
     if(! defined $prev_name || $prev_name ne $name) {
         die "Duplicated name $name" if exists $names{$name};
-	$names{$name} = 1;
-	$prev_name = $name;	
+	$names{$name} = [];
+	$prev_name = $name;
+	$len = 0;
     } else {
-	$name = $name . "_CONT";
+	# change name for temporary output bed
+	$parts[4] = $name . "_CONT";
     }
-    print $out join("\t", @parts[0..2], $name, 0, $parts[3]), "\n";    
+    $len += $parts[2]-$parts[1];
+    push @{$names{$name}}, $len;
+    print $out join("\t", @parts[0..2, 4], 0, $parts[3]), "\n";    
 }
 close($out) or die;
 close($in) or die;
 
-# read the list of fasta files, check that they exist
-my @fasta;
-open $in, "<", $fasta_list or die;
-while(my $line = <$in>) {
-    $line =~ s/\s+$//;
-    $line =~ s/^\s+//;
-    die "missing fasta $line" unless -r $line;
-    push @fasta, $line;
+if(defined $joins_file) {
+    open $out, ">", $joins_file or die "Cannot open $joins_file";
+    foreach my $seq (sort keys %names) {
+	my $pos = $names{$seq};
+	for(my $i=0; $i+1<@$pos; $i++) {
+	    print $out "$seq:$pos->[$i]\n";
+	}
+    }
+    close $out or die;
 }
-close $in or die;
-
-# create concatenated fasta
-my_run("cat " . join(" ", @fasta) . " > $dir/tmp1.fa");
 
 # get regions
 my_run("bedtools getfasta -fi $dir/tmp1.fa -bed $dir/regions.bed -s -name | perl -ne 's/\\([+-]\\)\$//; print' >$dir/tmp2.fa");
