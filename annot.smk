@@ -2,7 +2,12 @@
 TRIMMOMATIC_OPT = "ILLUMINACLIP:/usr/local/share/trimmomatic/adapters/TruSeq3-PE.fa:2:30:10"
 TRINITY_OPT = "--max_memory 40G --CPU 8"
 BLAT_MAX_INTRON = "5000"
-CDNAFILTER_OPT = "-minId=0.95 -minCover=0.75 -maxAligns=1"
+CDNAFILTER_OPT = "-minId=0.95 -minCover=0.75 -globalNearBest=0"
+STAR_OPT = "--runThreadN 4"
+SCRIPT_PATH = "/opt/assembly-scripts"
+RFAM_OPT = "--cpu 6"
+AUGUSTUS_DIR = "/usr/local/share/augustus-3.2.3/augustus-3.2.3"
+GENETIC_CODE = 1
 
 rule rna_trim:
     input:
@@ -28,13 +33,12 @@ rule trinity_paired:
     input:
         fq1="{rnaseq}_trimmed_1.fastq.gz", fq2="{rnaseq}_trimmed_2.fastq.gz"
     output:
-        fa="{rnaseq}_tr_paired.fa", map="{rnaseq}_tr_paired.gene_trans_map",
-        log="{rnaseq}_tr_paired.log"
+        fa="{rnaseq}_tr_paired.fa", map="{rnaseq}_tr_paired.gene_trans_map"
     params:
-        tmp = "{rnaseq}_tmp_trinityp"
+        tmp = "{rnaseq}_tmp_trinityp", log="{rnaseq}_tr_paired.log"
     shell:
          """
-        Trinity --version > {output.log}
+        Trinity --version > {params.log}
         Trinity {TRINITY_OPT} --seqType fq --left {input.fq1} --right {input.fq2} --full_cleanup --output {params.tmp}
         mv {params.tmp}.Trinity.fasta {output.fa}
         mv {params.tmp}.Trinity.fasta.gene_trans_map {output.map}
@@ -44,13 +48,12 @@ rule trinity_single:
     input:
         fq="{rnaseq}_trimmed_u.fastq.gz"
     output:
-        fa="{rnaseq}_tr_single.fa", map="{rnaseq}_tr_single.gene_trans_map",
-        log="{rnaseq}_tr_single.log"
+        fa="{rnaseq}_tr_single.fa", map="{rnaseq}_tr_single.gene_trans_map"
     params:
-        tmp = "{rnaseq}_tmp_trinitys"
+        tmp = "{rnaseq}_tmp_trinitys", log="{rnaseq}_tr_single.log"
     shell:
-         """
-        Trinity --version > {output.log}
+        """
+        Trinity --version > {params.log}
         Trinity {TRINITY_OPT} --seqType fq --single {input.fq} --full_cleanup --output {params.tmp}
         mv {params.tmp}.Trinity.fasta {output.fa}
         mv {params.tmp}.Trinity.fasta.gene_trans_map {output.map}
@@ -79,4 +82,159 @@ rule transcripts_blat:
         blat -maxIntron={BLAT_MAX_INTRON} {input.genome} {input.tr} {params.tmp_psl}
         pslCDnaFilter {CDNAFILTER_OPT} {params.tmp_psl} {output.psl} 2> {output.log}
         rm {params.tmp_psl}
+        """
+
+rule bam_star:
+    input:
+       fq1="{rnaseq}_trimmed_1.fastq.gz", fq2="{rnaseq}_trimmed_2.fastq.gz",fqu="{rnaseq}_trimmed_u.fastq.gz", genome="genome.fa"
+    output:
+       bam="{rnaseq}_trimmed.bam"
+    params:
+       index="{rnaseq}_trimmed.bam-tmp",
+       prefix="{rnaseq}_trimmed.bam-"
+    shell:
+        """
+        mkdir {params.index}
+        STAR {STAR_OPT} --runMode genomeGenerate --genomeDir {params.index} --genomeFastaFiles {input.genome}  --genomeSAindexNbases 11
+    	STAR {STAR_OPT} --genomeDir {params.index} --alignIntronMax {BLAT_MAX_INTRON} --readFilesIn {input.fq1} {input.fq2} --outFileNamePrefix {params.prefix} e --readFilesCommand zcat
+    	STAR {STAR_OPT} --genomeDir {params.index} --alignIntronMax {BLAT_MAX_INTRON} --readFilesIn {input.fqu} --outFileNamePrefix {params.prefix}u- e --readFilesCommand zcat
+    	rm -r {params.index}
+    	rm {params.prefix}Log.progress.out {params.prefix}u-Log.progress.out
+    	samtools view -b {params.prefix}Aligned.out.sam | samtools sort > {params.prefix}1.bam
+    	samtools view -b {params.prefix}u-Aligned.out.sam | samtools sort > {params.prefix}2.bam
+    	rm {params.prefix}Aligned.out.sam {params.prefix}u-Aligned.out.sam
+    	samtools merge {output.bam} {params.prefix}1.bam {params.prefix}2.bam
+    	rm {params.prefix}1.bam {params.prefix}2.bam
+    	samtools index {output.bam}
+        """
+
+rule genome_sizes:
+    input:
+        "{genome}.fa"
+    output:
+        "{genome}.sizes"
+    shell:
+        """
+        faSize -detailed {input} > {output}
+        """
+
+# create coverage from bam file (for rnaseq coverage)
+rule cov_bedgraph:
+    input:
+        sizes="genome.sizes", bam="{aln}.bam"
+    output:
+        "{aln}.bedgraph"
+    shell:
+        """
+        bedtools genomecov -ibam {input.bam} -g {input.sizes} -bga -split > {output}
+        """
+
+# bigwig
+rule cov_bg:
+    input:
+        sizes="genome.sizes", bedgraph="{aln}.bedgraph"
+    output:
+        "{aln}.bw"
+    shell:
+        """
+        bedGraphToBigWig {input.bedgraph} {input.sizes} {output}
+        """
+
+rule repeats_fungi:
+    input:
+        "genome.fa"
+    output:
+        out="repeatMaskerFungi.out"
+    params:
+        tmp="tmp-rmf-genome.fa"
+    shell:
+        """
+        cp {input} {params.tmp}
+        chmod u+w {params.tmp}
+        RepeatMasker -pa 4 -species fungi -xsmall {params.tmp}
+        mv {params.tmp}.out {output}
+        mv {params.tmp}.tbl {output}.tbl
+        rm {params.tmp} {params.tmp}.cat.gz {params.tmp}.masked
+        """
+
+rule trna:
+    input:
+        "genome.fa"
+    output:
+        bed="trnascan.bed", out="trnascan.out"
+    params:
+        tmp="tm"
+    shell:
+        """
+        tRNAscan-SE {input} > {output.out}
+        {SCRIPT_PATH}/tRNAscan-SEtoBED.py < {output.out} > {output.bed}
+        """
+
+rule rfam:
+    input:
+        "genome.fa"
+    output:
+        bed="rfam.bed", out="rfam.out", tblout="rfam.tblout"
+    shell:
+        """
+        cmscan {RFAM_OPT} --rfam --cut_ga --nohmmonly --tblout {output.tblout} /extdata/Rfam/12.3/Rfam.cm {input} > {output.out}
+        {SCRIPT_PATH}/cmscanToBed.py < {output.tblout} > {output.bed}
+        """
+
+rule hints:
+    input:
+        "transcripts.psl"
+    output:
+        "transcripts.hints.gff"
+    shell:
+        """
+        sort -k14,14 -k16,16g {input} > {output}.tmp.psl
+        {AUGUSTUS_DIR}/scripts/blat2hints.pl --in={output}.tmp.psl --out={output}
+        rm {output}.tmp.psl
+        """
+
+rule au_tr:
+    input:
+        fa="genome.fa", hints="transcripts.hints.gff", cfg="au-{cfg}.cfg"
+    output:
+        gtf="au-{cfg}-tr.orig.gtf"
+    shell:
+        """
+        export SP=`head -n 1 {input.cfg}`
+        export DIR=`head -n 2 {input.cfg} | tail -n 1`
+        echo "SP:$SP  DIR:$DIR"
+        augustus --uniqueGeneId=true --AUGUSTUS_CONFIG_PATH=$DIR --species=$SP --hintsfile={input.hints} --extrinsicCfgFile={AUGUSTUS_DIR}/config/extrinsic/extrinsic.ME.cfg {input.fa} > {output}
+        """
+
+rule au_gp:
+    input:
+        "au-{name}.orig.gtf"
+    output:
+        "au-{name}.gp"
+    shell:
+        """
+        perl -lane 'print unless /^#/ || $F[1] ne "AUGUSTUS" || $F[2] eq "gene" || $F[2] eq "transcript"' {input} > {output}.tmp.gtf
+        gtfToGenePred -genePredExt {output}.tmp.gtf {output}
+        rm {output}.tmp.gtf
+        """
+
+rule au_gtf:
+    input:
+        gtf="au-{name}.gp"
+    output:
+        gtf="au-{name}.gtf"
+    shell:
+        """
+        genePredToGtf -honorCdsStat file {input} {output}
+        """
+
+
+rule gtf2prot:
+    input:
+        gtf="{name}.gtf", fa="genome.fa"
+    output:
+        prot="{name}-prot.fa", cdna="{name}-cdna.fa"
+    shell:
+        """
+        {SCRIPT_PATH}/gtf2transcript.pl -c -s -S -g {GENETIC_CODE} {input.fa} {input.gtf} -10 0 {output.cdna} {output.prot}
         """
