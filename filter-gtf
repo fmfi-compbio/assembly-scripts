@@ -1,0 +1,3788 @@
+#! /usr/bin/perl -w
+
+use strict;
+use Storable ("dclone");
+use POSIX;
+use Getopt::Std;
+use Data::Dumper;
+use Scalar::Util qw(looks_like_number);
+
+my $USAGE = "
+filter-gtf: processor of about files
+
+usage: filter-gtf [options] <about filename> <fasta filename>
+
+Options:
+-p params  params is a list of pairs of words, 
+           all words separated by whitespace.
+           Each occurrence of the first word will be replaced
+           by the second word in the about file.
+           Useful for specifying filenames and so on.
+";
+
+my %Options;
+getopts('p:', \%Options);
+if(!exists $Options{'p'}) {
+    $Options{'p'}=[];
+} else {
+    my @parts = split " ", $Options{'p'};
+    die $USAGE unless @parts%2==0;
+    my @a;
+    for(my $i=0; $i<@parts; $i+=2) {
+	push @a, [$parts[$i], $parts[$i+1]];
+    }
+    $Options{'p'} = \@a;
+}
+
+
+# list of initialization functions for filters
+my %filter_init = 
+    (
+     'read_gtf' => \&init_read_gtf,
+     'write_int' => \&init_write_int,
+     'dump' => \&init_dump,
+     'trim' => \&init_trim,
+     'count_duplicates' => \&init_count_duplicates,
+     'find_utr_pairs' => \&init_find_utr_pairs,
+     'add_introns' => \&init_add_introns,
+     'write_gtf' => \&init_write_gtf,
+     'mark_low_score' => \&init_mark_low_score,
+     'mark_bad_frame' => \&init_mark_bad_frame,
+     'add_strand' => \&init_add_strand,
+     'remove_bad_transcripts' => \&init_remove_bad_transcripts,
+     'remove_short_transcripts' => \&init_remove_short_transcripts,
+     'remove_nonsense_transcripts' => \&init_remove_nonsense_transcripts,
+     'split_nonsense_transcripts' => \&init_split_nonsense_transcripts,
+     'remove_incomplete_transcripts' => \&init_remove_incomplete_transcripts,
+     'remove_overlapping_transcripts' => \&init_remove_overlapping_transcripts,
+     'normalize_score' => \&init_normalize_score,
+     'multiply_score' => \&init_multiply_score,
+     'change_score' => \&init_change_score,
+     'set_score' => \&init_set_score,
+     'add_start_site' => \&init_add_start_site,
+     'add_stop_site' => \&init_add_stop_site,
+     'add_CDS' => \&init_add_CDS,
+     'add_start_codon' => \&init_add_start_codon,
+     'add_stop_codon' => \&init_add_stop_codon,
+     'add_intergenic' => \&init_add_intergenic,
+     'add_gene_id' => \&init_add_gene_id,
+     'mark_long_gaps' => \&init_mark_long_gaps,
+     'find_pseudogenes' => \&init_find_pseudogenes,
+     'remove_bad_rows' => \&init_remove_bad_rows,
+     'cover_void' => \&init_cover_void,
+     'write_schedule' => \&init_write_schedule,
+     'clear_status' => \&init_clear_status,
+     'compute_coverage' => \&init_compute_coverage,
+     );
+
+# list of filters
+my %filter_exec = 
+    ( 
+      'read_gtf' => \&exec_read_gtf,
+      'write_int' => \&exec_write_int,
+      'dump' => \&exec_dump,
+      'trim' => \&exec_trim,
+      'count_duplicates' => \&exec_count_duplicates,
+      'find_utr_pairs' => \&exec_find_utr_pairs,
+      'add_introns' => \&exec_add_introns,
+      'write_gtf' => \&exec_write_gtf,
+      'mark_low_score' => \&exec_mark_low_score,
+      'mark_bad_frame' => \&exec_mark_bad_frame,
+      'add_strand' => \&exec_add_strand,
+      'remove_bad_transcripts' => \&exec_remove_bad_transcripts,
+      'remove_short_transcripts' => \&exec_remove_short_transcripts,
+      'remove_nonsense_transcripts' => \&exec_remove_nonsense_transcripts,
+      'split_nonsense_transcripts' => \&exec_split_nonsense_transcripts,
+      'remove_incomplete_transcripts' => \&exec_remove_incomplete_transcripts,
+      'remove_overlapping_transcripts' => \&exec_remove_overlapping_transcripts,
+      'normalize_score' => \&exec_normalize_score,
+      'multiply_score' => \&exec_multiply_score,
+      'change_score' => \&exec_change_score,
+      'set_score' => \&exec_set_score,
+      'add_start_site' => \&exec_add_start_site,
+      'add_stop_site' => \&exec_add_stop_site,
+      'add_CDS' => \&exec_add_CDS,
+      'add_start_codon' => \&exec_add_start_codon,
+      'add_stop_codon' => \&exec_add_stop_codon,
+      'add_intergenic' => \&exec_add_intergenic,
+      'add_gene_id' => \&exec_add_gene_id,
+      'mark_long_gaps' => \&exec_mark_long_gaps,
+      'find_pseudogenes' => \&exec_find_pseudogenes,
+      'remove_bad_rows' => \&exec_remove_bad_rows,
+      'cover_void' => \&exec_cover_void,
+      'write_schedule' => \&exec_write_schedule,
+      'clear_status' => \&exec_clear_status,
+      'compute_coverage' => \&exec_compute_coverage,
+      );
+
+# list of wrap-up routines for filters (optional)
+my %filter_close = 
+    ( 
+      'compute_coverage' => \&close_compute_coverage,
+      'add_gene_id' => \&close_add_gene_id,
+      );
+
+
+# <seqname> <source> <feature> <start> <end> <score> <strand> <frame> [attributes] [comments]
+my @gtf_col_keys = ("seqname", "source", "feature", "start", 
+		    "end", "score", "strand", "frame", 
+		    "attributes", "comments");
+
+
+
+# main: open about file, or print usage and die
+if(@ARGV != 2) {
+    die $USAGE;
+}
+else {
+    # open the fasta file
+    my ($about_filename, $fasta_filename) = @ARGV;
+    local (*FASTA_FILE);
+    open (FASTA_FILE, "<$fasta_filename") 
+	or die "Cannot open $fasta_filename\n";
+    
+    # read, parse, and execute the about_file
+    my $commands = read_about($about_filename, $Options{'p'});
+    printf STDERR "Processing %d command(s), and initializing filters.\n", 
+           scalar(@$commands);
+    my $filters = process_commands($commands, $about_filename);
+    printf STDERR "Executing %d filter(s).\n", scalar(@$filters);
+    execute_filters($filters);
+    print STDERR "Finished.\n";
+}
+
+#####################################################################
+#################### main cycle sub-routines ########################
+#####################################################################
+
+# read commands from the about file into an array
+sub read_about
+{
+    my ($about_filename, $replace_list) = @_;
+    my @commands;
+    read_about_recursively($about_filename, \@commands, 0, undef, $replace_list);
+    return \@commands;
+}
+
+sub read_about_recursively
+{
+    my ($about_filename, $commands, $depth, $parent_about_filename, $replace_list) = @_;
+    
+    # make sure we are not in an infinite loop
+    if($depth > 50) {
+	die "Depth of inclusion reached 50. Probably an infinite loop. Aborting.\n";
+    }
+    
+    # open about file
+    local *ABOUT_FILE;
+    if(!open (ABOUT_FILE, "<$about_filename")) {
+	if($depth > 0) {
+	    die "Cannot open the file '$about_filename' (included from '$parent_about_filename').\n";
+	}
+	else {
+	    die "Cannot open the file '$about_filename'.\n";
+	}
+    }
+    printf STDERR "Opening the about file \"%s\".\n", $about_filename;
+    
+    my $line_number=0;
+    my $line;
+    
+    # read and parse the commands from the about_file
+    while(defined($line = <ABOUT_FILE>)) {
+	$line_number++;
+	
+	my $cmd = parse_about_line($line, $replace_list);
+	
+	if(defined($cmd)) {
+	    my ($keyword, $name, $value) = @$cmd;
+	    
+	    if($keyword eq "include") {
+		# read recursively descendant about_file
+		read_about_recursively($name, $commands, $depth+1, $about_filename);
+	    }
+	    else {
+		# check for obvious syntax errors
+		if(! (
+		      ($keyword eq "filter")
+		      || ($keyword eq "option")
+		      || ($keyword eq "default")
+		      || ($keyword eq "push")
+		      || ($keyword eq "undef")
+		      )) {
+		    die "Unknown command '$keyword' in the file '$about_filename' at line $line_number.\n";
+		}
+		
+		# append command
+		push @$commands, $cmd;
+	    }
+	}
+    }
+
+    close(ABOUT_FILE);
+}
+
+# split line into <keyword> <name> <value> (e.g. option exon_feature CDS)
+# or return undef if it is not possible
+sub parse_about_line
+{
+    my ($line, $replace_list) = @_;
+    $line = trim($line);
+    if($line =~ /^\#/ || $line eq "") { return undef; }
+
+    # applied replace list from command-line options
+    foreach my $pair (@$replace_list) {
+	$line =~ s/$pair->[0]/$pair->[1]/g;
+    }
+    
+    my ($keyword, $name, $value) = split(' ', $line, 3);
+    return [$keyword, $name, $value];
+}
+
+# processes all options, creates and initializes all filters 
+# (e.g. open gft and int files mentioned in about file)
+sub process_commands
+{
+    my ($commands, $about_filename) = @_;
+    my %options;
+    my @filters;
+    
+    foreach my $cmd (@$commands) {
+	my ($keyword, $name, $value) = @$cmd;
+	
+	if($keyword eq "filter") {
+	    my $options_copy = dclone(\%options); # deep clone of options
+	    my $filter = create_filter($name, $options_copy);
+	    $filter->{"data"}->{"about_filename"} = $about_filename;
+	    &{$filter->{"init"}}($filter->{"options"}, $filter->{"data"});
+	    push @filters, $filter;
+	    print STDERR "OK\n"
+	}
+	elsif($keyword eq "option") {
+	    $options{$name} = $value;
+	}
+	elsif($keyword eq "default") {
+	    if (! exists $options{$name} ) {
+		$options{$name} = $value;
+	    }
+	}
+	elsif($keyword eq "push") {
+	    push @{$options{$name}}, $value;
+	}
+	elsif($keyword eq "undef") {
+	    delete $options{$name};
+	}
+	else {
+	    die "Bad keyword \"$keyword\".\n";
+	}
+    }
+    
+    return \@filters;
+}
+
+sub create_filter
+{
+    my ($name, $options) = @_;
+    
+    if(! exists $filter_init{$name} || ! exists $filter_exec{$name} ) {
+	die "Unknown filter $name\n";
+    }
+	
+    printf STDERR "Initializing filter \"%s\"....", $name;
+    
+    return { 
+	"name" => $name, 
+	"init" => $filter_init{$name}, 
+	"exec" => $filter_exec{$name}, 
+	"close" => $filter_close{$name},
+	"options" => $options, 
+	"data" => {} 
+    };
+}
+
+# read fasta and execute the filters on it
+sub execute_filters
+{
+    my ($filters, $about_filename) = @_;
+    
+    # read fasta sequences from the fasta file, one by one
+    while(1) {
+	# read one fasta sequence
+	my ($full_seqname, $sequence) = read_fasta(*FASTA_FILE);
+	if(!(defined $sequence && defined $full_seqname)) { last; }
+	
+	my $short_seqname = normalize_fasta_name($full_seqname);
+
+	printf STDERR "Loaded fasta sequence \"%s\" of length %d chars.\n", 
+	              $short_seqname, length($$sequence);
+	print STDERR "Currently zero gtf records in memory.\n";
+    
+	# execute all filters on this fasta sequence
+	my $gtf_lines = [];
+	foreach my $filter (@$filters) {
+	    printf STDERR "Executing filter \"%s\"....", $filter->{"name"};
+	    my $start_time = time;
+	    $filter->{"data"}->{"full_seqname"} = $full_seqname;
+	    $filter->{"data"}->{"seqname"} = $short_seqname;
+	    $filter->{"data"}->{"about_filename"} = $about_filename;
+	    $gtf_lines = &{$filter->{"exec"}}($filter->{"options"}, $filter->{"data"}, $gtf_lines, $sequence);
+	    my $elapsed_time = time - $start_time;
+	    printf STDERR "done in %d seconds.\n", $elapsed_time;
+	    printf STDERR "Currently %d gtf record(s) in memory.\n", scalar(@$gtf_lines);
+	}
+    }
+
+    foreach my $filter (@$filters) {
+	if(defined $filter->{"close"}) {
+	    printf STDERR "Executing closing routin for filter \"%s\"....", $filter->{"name"};
+	    &{$filter->{"close"}}($filter->{"options"}, $filter->{"data"});
+	    print STDERR "done.\n";
+	}
+    }
+}
+
+
+########################################################
+##################   F I L T E R S   ###################
+########################################################
+
+########################################################
+################## filter read_gtf #####################
+########################################################
+
+
+# read GTF lines corresponding to a fasta sequence
+sub init_read_gtf
+{
+    my ($options, $data) = @_;
+    
+    # default to name of about file if no input file specified
+    my $default = change_filename_extension($data->{"about_filename"}, ".gtf");
+    initialize_option($options, "gtf_input_file", $default);
+    
+    my $filename = $options->{"gtf_input_file"};
+    local(*GTF_INPUT_FILE);
+    open(GTF_INPUT_FILE, $filename) or die "Cannot open file $filename\n";
+    $data->{"input"} = *GTF_INPUT_FILE;
+}
+
+sub exec_read_gtf
+{
+    my ($options, $data, $gtf_lines) = @_;
+    
+    my $seqname = $data->{"seqname"};
+    my $input = $data->{"input"};
+    
+    # read gtf lines from the file corresponding to one fasta sequence
+    while(1) {
+	my $file_pos = tell($input);
+	my $line = <$input>;
+	last unless defined $line;
+	chomp $line;
+	
+	my $gtf = split_gtf_line($line);
+	
+	if(defined $gtf) {
+	    die "Aborting.\n" unless check_gtf_line($gtf);
+	    
+	    if(normalize_fasta_name($gtf->{"seqname"}) 
+	       eq $seqname) {
+		push @$gtf_lines, $gtf;
+	    }
+	    else {
+		# stop when name of fasta sequence changes
+		seek($input, $file_pos, SEEK_SET);
+		last;
+	    }
+	}
+    }
+    
+    return $gtf_lines;
+}
+
+
+# splits a line of a GTF file into pieces and returns hash
+sub split_gtf_line
+{
+    my ($line) = @_;
+    my %gtf;
+    
+    # take away comment
+    my ($data, $comments) = split("#", $line, 2);
+    if(defined $comments) {
+	$gtf{"comments"} = trim($comments);
+    }
+    
+    return undef unless defined $data;
+    
+    # split the line a put into a hash
+    my @gtf_cols = split("\t", $data);
+    for(my $i=0; $i<scalar(@gtf_cols); $i++) {
+	#print "$i ", scalar(@gtf_col_keys), "\n";
+	$gtf{$gtf_col_keys[$i]} = trim($gtf_cols[$i]);
+    }
+    
+    # if frame (the 8th column) was not defined then the line is incomplete, 
+    # so ignore it
+    return undef unless defined $gtf{"frame"};
+    
+    # if there are no attributes
+    return \%gtf unless defined $gtf{"attributes"};
+    
+    # split the attribute column (9th) as well
+    my @attr = split ";", $gtf{"attributes"};
+    foreach my $attrib (@attr) {
+	if($attrib =~ /^\s*(\S+)\s+"(.*)"\s*$/) {
+	    if(!exists($gtf{$1})) {
+		$gtf{$1} = trim($2);
+	    }
+	}
+    }
+    
+    return \%gtf;
+}
+
+# check whether a row is correct
+sub check_gtf_line
+{
+    my ($gtf_line) = @_;
+    
+    # check whether start is a number
+    if(! looks_like_number($gtf_line->{"start"}) ) {
+	printf STDERR "start\"=%s\" is not a number\n", $gtf_line->{"start"};
+	return 0;
+    }
+    
+    # check whether end is a number
+    if(! looks_like_number($gtf_line->{"end"}) ) {
+	printf STDERR "end=\"%s\" is not a number\n", $gtf_line->{"end"};
+	return 0;
+    }
+    
+    # check whether start <= end 
+    if($gtf_line->{"start"} > $gtf_line->{"end"}) {
+	printf STDERR "start=%d is greater than end=%d\n", 
+                      $gtf_line->{"start"}, $gtf_line->{"end"};
+	return 0;
+    }
+    
+    # check whether frame is 0,1,2 or a "."
+    if(! ($gtf_line->{"frame"} =~ /^[012\.]$/) ) {
+	printf STDERR "Warning: frame=\"%s\" is not meaningful; setting it to \".\".\n", $gtf_line->{"frame"};
+	$gtf_line->{"frame"} = ".";
+	# this is not a fatal error, so do NOT return 0
+    }
+
+    # check whether score is a number or a "."
+    if(! (looks_like_number($gtf_line->{"score"}) || ($gtf_line->{"score"} eq ".")) ) {
+	printf STDERR "Warning: score=\"%s\" is not meaningful; setting it to \".\".\n", $gtf_line->{"score"};
+	$gtf_line->{"score"} = ".";
+	# this is not a fatal error, so do NOT return 0
+    }
+    
+    return 1;
+}
+
+
+########################################################
+####################### filter dump ####################
+########################################################
+sub init_dump
+{
+    my ($options, $data) = @_;
+    
+    print "\n\n-------- init_dump ------\n";
+    print "options = ", Dumper($options);
+    print "data = ", Dumper($data);
+}
+
+sub exec_dump
+{
+    my ($options, $data, $gtf) = @_;
+    
+    print "\n\n-------- exec_dump ---------\n";
+    print "options = ", Dumper($options);
+    print "data = ", Dumper($data);
+    print "gtf lines = ", scalar(@$gtf), "\n";
+    print "gtf = ", Dumper($gtf), "\n";
+    
+    # do not change gtf lines
+    return $gtf;
+}
+
+########################################################
+################### filter write_int ###################
+########################################################
+sub init_write_int
+{
+    my ($options, $data) = @_;
+    
+    initialize_option($options, "int_filter", undef, "array");
+    
+    # default to name of the about file if no output file specified
+    my $default = change_filename_extension($data->{"about_filename"}, ".int");
+    initialize_option($options, "int_output_file", $default);
+    
+    # open file for write
+    local(*INT_FILE);
+    open(INT_FILE, ">$options->{'int_output_file'}") or die "Can not open file ".$options->{"int_output_file"}." for writing\n";
+    $data->{"int_file"} = *INT_FILE;
+}
+
+sub exec_write_int
+{
+    my ($options, $data, $gtf, $fasta) = @_;
+    my $output = $data->{"int_file"};
+    
+    my $length = length($$fasta);
+
+    print $output $data->{'full_seqname'}, "\n";
+    
+    my @filters;
+    foreach my $int_filter (@{$options->{"int_filter"}}) {
+	my @parts = split(' ', $int_filter, 5); # feature, strand, frame, advisor, labels
+	push @filters, \@parts;
+    }
+    
+    my $printed = 0;
+    
+    foreach my $gtf_line (@$gtf) {
+	foreach my $int_filter (@filters) {
+	    my ($feature, $strand, $frame, $advisor, $labels) = @$int_filter;
+	    	    
+	    if(
+	       $gtf_line->{"start"} >= 1 &&
+	       $gtf_line->{"end"} <= $length && 
+	       matches($gtf_line->{"feature"}, $feature) &&
+	       matches($gtf_line->{"strand"}, $strand) &&
+	       matches($gtf_line->{"frame"}, $frame) 
+	       ) {
+		$printed++;
+		my $start = $gtf_line->{"start"} - 1;
+		my $end = $gtf_line->{"end"} - 1;
+		my $score = $gtf_line->{"score"};
+		if(! looks_like_number($score)) {
+		    $score = 0;
+		}
+		print $output "$advisor $start $end ", POSIX::floor($score), " $labels\n";
+	    }
+	}
+    }
+    
+    printf $output "x -1 -1 -1 x\n";
+    print STDERR "Printed $printed records. ";
+
+    # return original set of gtf lines 
+    return $gtf;
+}
+
+########################################################
+################### filter trim ########################
+########################################################
+
+sub init_trim
+{
+    my ($options, $data) = @_;
+    
+    initialize_option($options, "trim_length", 10, "positive number");
+
+    initialize_option($options, "trim_feature", "*");
+    initialize_option($options, "trim_minlength", 1, "nonnegative number");
+}
+
+# compute how many chars to remove from a gtf interval
+sub trimtrim
+{
+    my ($length, $min, $trim) = @_;
+    
+    if($length <= $min) { return 0; }
+	
+    if($length >= 2*$trim + $min) { return $trim; }
+    
+    return POSIX::floor(($length-$min)/2);
+}
+
+sub exec_trim
+{
+    my ($options, $data, $gtf) = @_;
+    
+    my @gtf_new;
+    
+    foreach my $gtf_line (@$gtf) {
+	if(matches($gtf_line->{"feature"}, $options->{"trim_feature"})) {
+	    my $t = trimtrim($gtf_line->{"end"} - $gtf_line->{"start"} + 1, 
+			     $options->{"trim_minlength"}, 
+			     $options->{"trim_length"});
+	    
+	    # shorten the row from both ends
+	    $gtf_line->{"start"} += $t;
+	    $gtf_line->{"end"} -= $t;
+	    
+	    # recompute frame
+	    if($gtf_line->{"strand"} =~ /[+-]/ 
+	       && $gtf_line->{"frame"} =~ /[012]/) {
+		$gtf_line->{"frame"} += 3-($t%3); 
+		$gtf_line->{"frame"} %= 3; 
+	    }
+	    else {
+		$gtf_line->{"frame"} = ".";
+	    }
+	    
+	    # remove rows with zero length (this is completely possible)
+	    # zero length gtf_line has end=start-1
+	    if($gtf_line->{"start"} <= $gtf_line->{"end"}) {
+		push @gtf_new, $gtf_line;
+	    }
+	}
+	else {
+	    push @gtf_new, $gtf_line;
+	}
+    }
+    
+    return \@gtf_new;
+}
+
+########################################################
+################### filter count_duplicates ########################
+########################################################
+
+sub init_count_duplicates
+{
+    my ($options, $data) = @_;
+    
+    initialize_option($options, "maximum_duplicate_drift", 0, "nonnegative number");
+    initialize_option($options, "count_feature", "*");
+}
+
+sub count_duplicates_key
+{
+    #compute hash key for count duplicate
+    my ($start, $end, $strand, $bin) = @_;
+
+    if($bin == 0) { $bin = 1; }
+
+    $start = POSIX::floor($start / $bin);
+    $end = POSIX::floor($end/$bin);
+    return "$strand $start $end";
+}
+
+sub is_duplicate
+{
+    my ($line1, $line2, $max_drift) = @_;
+
+    # identical lines are not duplicates
+    if ($line1 eq $line2) { return 0; }
+
+    # dupliactes need the same strand
+    if($line1->{'strand'} ne $line2->{'strand'}) { return 0; }
+
+    #duplicates need start close enough
+    if(abs($line1->{'start'} - $line2->{'start'}) > $max_drift) {
+	return 0; 
+    }
+
+    #duplicates need end close enough
+    if(abs($line1->{'end'} - $line2->{'end'}) > $max_drift) {
+	return 0; 
+    }
+
+    return 1;
+}
+
+sub exec_count_duplicates
+{
+    my ($options, $data, $gtf) = @_;
+    
+    my $bin = $options->{'maximum_duplicate_drift'};
+
+    my %hash;
+
+    #store items in the hash, key contains strand and both endpoints
+    #divided by $bin.
+    foreach my $gtf_line (@$gtf) {
+	if(matches($gtf_line->{"feature"}, $options->{"count_feature"})) {
+	
+	    my $key = count_duplicates_key(@{$gtf_line}{'start','end','strand'}, 
+					   $bin);
+	    push @{$hash{$key}}, $gtf_line;
+	}
+    }
+
+    my @steps = ($bin == 0) ? (0) : (-$bin, 0, $bin);
+
+    #go through all hashed items
+    foreach my $key (keys %hash) {
+	foreach my $gtf_line (@{$hash{$key}}) {
+
+	    my $count = 0;
+
+	    #find all hash bins close enough
+	    foreach my $start_step (@steps) {
+		foreach my $end_step (@steps) {
+		    my $start = $gtf_line->{'start'} + $start_step;
+		    my $end = $gtf_line->{'end'} + $end_step;
+		    my $other_key = count_duplicates_key($start, $end, 
+							 $gtf_line->{'strand'},
+							 $bin);
+		    
+		    #check all items in this bin
+		    foreach my $other_line (@{$hash{$other_key}}) {
+			if(is_duplicate($gtf_line, $other_line, $bin)) { 
+			    $count++;
+			}
+		    }	
+		}
+	    }  # for $start_step
+	    $gtf_line->{'score'} = $count;
+	}
+    }
+    
+
+    return $gtf;
+}
+
+########################################################
+################### filter find_utr_pairs ##############
+########################################################
+
+sub init_find_utr_pairs
+{
+    my ($options, $data) = @_;
+    
+    initialize_option($options, "exon_feature", "exon"); 
+	
+    initialize_option($options, "minimum_gene_length", 100,
+		      "positive number");
+	
+    initialize_option($options, "maximum_gene_length", 100000,
+		      "positive number"); 
+	
+    initialize_option($options, "maximum_informant_gap", 2, "number");
+	
+    initialize_option($options, "maximum_informant_overlap", 2,
+		      "number");
+
+    initialize_option($options, "mark_as_bad", "true", "boolean");
+	
+    die("Option minimum_gene_length (" 
+	. $options->{"minimum_gene_length"} 
+	. ") is greater than maximum_gene_length ("
+	. $options->{"maximum_gene_length"} . ")") 
+	unless ($options->{"minimum_gene_length"} 
+		<= $options->{"maximum_gene_length"});
+}
+
+
+sub exec_find_utr_pairs
+{
+    my ($options, $data, $gtf, $fasta_sequence) = @_;
+    my %hash;
+
+    my $id = 0;
+    
+    # hash gtf_lines with key info_name
+    foreach my $gtf_line (@$gtf) {
+		
+	if( matches($gtf_line->{"feature"}, $options->{"exon_feature"})
+	    && exists $gtf_line->{"info_start"} 
+	    && exists $gtf_line->{"info_end"} 
+	    && exists $gtf_line->{"info_name"}
+	    ) {
+	    my $key = $gtf_line->{"info_name"};	    
+	    push @{$hash{$key}}, $gtf_line;
+	}
+	elsif ($options->{"mark_as_bad"} eq "true") {
+	    $gtf_line->{"status"} = "bad";
+	}
+    }
+    
+    # go through the buckets
+    foreach my $bucket (values %hash) {
+	@{$bucket} = sort { $a->{"end"} <=> $b->{"end"} } @{$bucket};
+	
+	# prepare marking as bad, whenever a match is found, the pair is
+        # marked as 0. At the end remaining 1's are marked.
+	my $mark_value = ($options->{"mark_as_bad"} eq "true") ? 1 : 0;
+	my @to_mark = (($mark_value) x scalar(@$bucket));
+
+	#mark which alignments are already used
+	my @is_used = ((0) x scalar(@$bucket));
+
+	# for every pair of gtf lines in the same bucket
+	for(my $i=scalar(@$bucket)-1; $i>=0; $i--) {
+	    next if $is_used[$i];
+
+	    for(my $j=$i+1; $j<scalar(@$bucket); $j++) {
+		my $gtf1 = $bucket->[$i];
+		my $gtf2 = $bucket->[$j];
+
+		#putative start and end of the gene interval
+		my $start = min($gtf1->{"start"}, $gtf2->{"start"});
+		my $end = max($gtf1->{"end"}, $gtf2->{"end"});
+
+		my $length = $end-$start+1;
+
+		# the length of the gene must be at least minimum_gene_length
+		next if( $length < $options->{"minimum_gene_length"});
+		
+		# the length of the gene must be at most maximum_gene_length; 
+		# otherwise we skip the inner for-cycle.
+		last if($length > $options->{"maximum_gene_length"});
+
+		# exclude used alignments
+		next if $is_used[$j];
+		
+		# check transcript_id
+		next if exists $gtf1->{"transcript_id"}
+		&& exists $gtf2->{"transcript_id"} 
+		&& $gtf1->{"transcript_id"} ne $gtf2->{"transcript_id"};
+
+		# check strands
+		next unless $gtf1->{"strand"} eq $gtf2->{"strand"};
+		my $strand = $gtf1->{"strand"};
+
+		next unless (!exists $gtf1->{"info_strand"} 
+			     || !exists $gtf2->{"info_strand"} 
+			     || $gtf1->{"info_strand"} eq $gtf2->{"info_strand"});
+		
+		#if info_strand is -, flip $strand
+		if(exists $gtf1->{"info_strand"} 
+		   && $gtf1->{"info_strand"} eq '-' && $strand ne '.') {
+		    $strand = ($strand eq '-') ? '+' : '-';
+		}
+		    
+		# compute the informant gap and overlap 
+		my $overlap 
+		    = interval_overlap($gtf1->{"info_start"}, $gtf1->{"info_end"}, 
+				       $gtf2->{"info_start"}, $gtf2->{"info_end"});
+		next if $overlap > $options->{"maximum_informant_overlap"};
+
+		next if (-$overlap) > $options->{"maximum_informant_gap"};		
+
+		# if on forward strand, $gtf1 should be before $gtf2 in info
+		next if $strand eq '+' && $gtf1->{'info_end'} > $gtf2->{'info_end'};
+
+		# if on reverse strand, $gtf1 should be after $gtf2 in info
+		next if $strand eq '-' && $gtf1->{'info_end'} < $gtf2->{'info_end'};
+
+		# Add gene
+		my %gene;
+		$gene{"seqname"} = $data->{"seqname"};
+		$gene{"source"} = "filter_find_utr_pairs";
+		$gene{"feature"} = "gene";
+		($gene{"start"}, $gene{"end"}) = ($start, $end);
+		
+		if(looks_like_number($gtf1->{"score"}) 
+		   && looks_like_number($gtf2->{"score"}) ) {
+		    $gene{"score"} = ($gtf1->{"score"}+$gtf2->{"score"})/2;
+		}
+		else {
+		    $gene{"score"} = ".";
+		}
+
+		my $transcript_id = "utr-pair-" . $data->{"seqname"} . "-" . $id;
+		if(exists $gtf1->{"transcript_id"}) {
+		    $transcript_id = $gtf1->{"transcript_id"};
+		}
+		else {
+		    $gtf1->{"transcript_id"} = $transcript_id;
+		}
+		if(!exists $gtf2->{"transcript_id"}
+		   || $transcript_id ne $gtf2->{"transcript_id"}) {
+		    $gtf2->{"transcript_id"} = $transcript_id;
+		}
+		$id++;
+
+		$gene{"strand"} = $strand;
+		$gene{"frame"} = ".";
+		
+		$gene{"info_name"} = $gtf1->{"info_name"};
+		$gene{"transcript_id"} = $transcript_id;
+
+		#mark the exons as not bad
+		$to_mark[$i] = 0;
+		$to_mark[$j] = 0;
+
+		#mark the exons as used
+		$is_used[$i] = 1;
+		$is_used[$j] = 1;
+
+		# add the gene and skip the rest of the inner for-cycle
+		push @$gtf, \%gene;
+		last;
+	    }  # for exon $j
+	}  # for exon $i
+
+	#mark exons as bad
+	for(my $i=0; $i<scalar(@$bucket); $i++) {
+	    if($to_mark[$i]) {
+		$bucket->[$i]{'status'} = 'bad';
+	    }
+	}
+    }
+    
+    return $gtf;
+}
+
+
+
+
+########################################################
+################### filter add_introns #################
+########################################################
+
+sub init_add_introns
+{
+    my ($options, $data) = @_;
+    
+    initialize_option($options, "exon_feature", "exon"); 
+	
+    initialize_option($options, "minimum_intron_length", 10,
+		      "positive number");
+	
+    initialize_option($options, "maximum_intron_length", 100000,
+		      "positive number"); 
+	
+    initialize_option($options, "maximum_informant_gap", 0, 
+		      "number");
+	
+    initialize_option($options, "maximum_informant_overlap", 0,
+		      "number");
+	
+    initialize_option($options, "check_splice_sites", "false",
+		      "boolean");
+	
+    die("Option minimum_intron_length (" 
+	. $options->{"minimum_intron_length"} 
+	. ") is greater than maximum_intron_length ("
+	. $options->{"maximum_intron_length"} . ")") 
+	unless ($options->{"minimum_intron_length"} 
+		<= $options->{"maximum_intron_length"});
+}
+
+# returns 4 characters from the intron interval (first two + last two)
+sub splice_site
+{
+    my ($a, $b, $fasta) = @_;
+    die unless ($b-$a+1 >= 4);
+    
+    if($a < 1) { return "NN-NN"; }
+    
+    if($b > length($$fasta)) { return "NN-NN"; }
+	
+    # indexing in GTF starts from one
+    my $splice_site = substr($$fasta, $a-1, 2); 
+    $splice_site .= "-";
+    $splice_site .= substr($$fasta, $b-2, 2);
+    
+    return $splice_site;
+}
+
+sub exec_add_introns
+{
+    my ($options, $data, $gtf, $fasta_sequence) = @_;
+    my %hash;
+    
+    my $need_info_coord = ($options->{'maximum_informant_gap'} >= 0
+			   || $options->{'maximum_informant_overlap'} >= 0);
+
+    # hash gtf_lines with key "transcript_id|||info_name"
+    foreach my $gtf_line (@$gtf) {
+		
+	if( 
+	    matches($gtf_line->{"feature"}, $options->{"exon_feature"})
+	    && (exists $gtf_line->{"info_start"} || !$need_info_coord)
+	    && (exists $gtf_line->{"info_end"} || !$need_info_coord)
+	    && (exists $gtf_line->{"transcript_id"} 
+		|| exists $gtf_line->{"info_name"})
+	    ) {
+	    my $key = "";
+	    
+	    if(exists $gtf_line->{"transcript_id"}) {
+		$key .= $gtf_line->{"transcript_id"};
+	    }
+	    
+	    $key .= "|||";
+	    
+	    if(exists $gtf_line->{"info_name"}) {
+		$key .= $gtf_line->{"info_name"};
+	    }
+	    
+	    push @{$hash{$key}}, $gtf_line;
+	}
+    }
+    
+    # go through the buckets
+    foreach my $bucket (values %hash) {
+	my ($i, $j);
+	
+	@{$bucket} = sort { $a->{"start"} <=> $b->{"start"} } @{$bucket};
+	
+	# for every pair of gtf lines in the same bucket
+	for($i=0; $i<scalar(@$bucket); $i++) {
+	    for($j=$i+1; $j<scalar(@$bucket); $j++) {
+		my $gtf1 = $bucket->[$i];
+		my $gtf2 = $bucket->[$j];
+		
+		# transcript_ids must be either both defined and equal, 
+                # or both undefined
+		if(exists $gtf1->{"transcript_id"}) {
+		    if(! exists $gtf2->{"transcript_id"}) {
+			next;
+		    }
+		    
+		    if($gtf1->{"transcript_id"} ne $gtf2->{"transcript_id"}) {
+			next;
+		    }
+		}
+		elsif(exists $gtf2->{"transcript_id"}) {
+		    next;
+		}
+		
+		# info_names must be either both defined and equal, 
+                # or both undefined
+		if(exists $gtf1->{"info_name"}) {
+		    if(! exists $gtf2->{"info_name"}) {
+			next;
+		    }
+		    
+		    if(! ($gtf1->{"info_name"} eq $gtf2->{"info_name"})) {
+			next;
+		    }
+		}
+		elsif(exists $gtf2->{"info_name"}) {
+		    next;
+		}
+		
+		# the distance of the intervals must be 
+                # at least minimum_intron_length
+		my $distance = interval_distance($gtf1->{"start"}, $gtf1->{"end"},  $gtf2->{"start"}, $gtf2->{"end"});
+		if( $distance < $options->{"minimum_intron_length"}) {
+		    next;
+		}
+		# Note that if the intervals intersect, then the distance is negative. 
+		# And hence the above test fails (if minimum_intron_length is positive).
+		
+		# distance of the intervals must be at most maximum_intron_length
+		# if the distance exceeds maximum_intron_length we skip the inner for-cycle.
+		if($options->{"maximum_intron_length"} < $distance) {
+		    last;
+		}
+		
+		# check strands
+		if(! ($gtf1->{"strand"} eq $gtf2->{"strand"})) {
+		    next;
+		}
+		my $strand = $gtf1->{"strand"};
+		
+		
+		# compute the informant gap and overlap 
+		# (typically gap or intersection in the aligned protein, RNA, etc.)
+		
+		if($options->{'maximum_informant_overlap'} >= 0) {
+		    my $overlap 
+			= interval_overlap($gtf1->{"info_start"}, $gtf1->{"info_end"}, 
+					   $gtf2->{"info_start"}, $gtf2->{"info_end"});
+		    if($overlap > $options->{"maximum_informant_overlap"}) {
+			next;
+		    }
+		}
+
+		if($options->{'maximum_informant_gap'} >= 0) {
+		    my $overlap 
+			= interval_overlap($gtf1->{"info_start"}, $gtf1->{"info_end"}, 
+					   $gtf2->{"info_start"}, $gtf2->{"info_end"});
+		    if( (-$overlap) > $options->{"maximum_informant_gap"}) {
+			next;
+		    }
+		}
+		
+		# compute the intron interval
+		my ($intron_start, $intron_end) = interval_gap($gtf1->{"start"}, $gtf1->{"end"},  $gtf2->{"start"}, $gtf2->{"end"});
+		
+		# check splice sites, if the option is turned on
+		if($options->{"check_splice_sites"} eq "true") {
+		    if($distance<4) {next; }
+		    
+		    # printf "intron_start=%d intron_end=%d\n", $intron_start, $intron_end;
+		    
+		    my $forward = uc splice_site($intron_start, $intron_end, $fasta_sequence);
+		    my $reverse = reverse_complement($forward);
+		    my @allowed_splice_sites = ("GT-AG", "GC-AG", "AT-AC");
+		    my $ok = 0;
+		    
+		    # depending on the strand
+		    if($strand eq "+") {
+			foreach my $site (@allowed_splice_sites) {
+			    if($site eq $forward) {
+				$ok = 1;
+			    }
+			}
+		    }
+		    elsif($strand eq "-") {
+			foreach my $site (@allowed_splice_sites) {
+			    if($site eq $reverse) {
+				$ok = 1;
+			    }
+			}
+		    }
+		    else {
+			$strand = ".";
+			
+			# look at both strands
+			foreach my $site (@allowed_splice_sites) {
+			    if($site eq $forward) {
+				$ok = 1;
+				
+				# make up strand of the added intron
+				$strand = "+";
+			    }
+			    
+			    if($site eq $reverse) {
+				$ok = 1;
+				
+				# make up strand of the added intron
+				$strand = "-";
+			    }
+			}
+		    }
+		    
+		    if(! $ok) {
+			next;
+		    }
+		}
+		
+		# Add intron!
+		my %intron;
+		$intron{"seqname"} = $data->{"seqname"};
+		$intron{"source"} = "filter_add_intron";
+		$intron{"feature"} = "intron";
+		($intron{"start"}, $intron{"end"}) = ($intron_start, $intron_end);
+		
+		if(looks_like_number($gtf1->{"score"}) 
+		   && looks_like_number($gtf2->{"score"}) ) {
+		    $intron{"score"} = ($gtf1->{"score"}+$gtf2->{"score"})/2;
+		}
+		else {
+		    $intron{"score"} = ".";
+		}
+		
+		$intron{"strand"} = $strand;
+		$intron{"frame"} = ".";
+		
+		if(exists $gtf1->{"info_name"}) {
+		    $intron{"info_name"} = $gtf1->{"info_name"};
+		}
+		
+		if(exists $gtf1->{"transcript_id"}) {
+		    $intron{"transcript_id"} = $gtf1->{"transcript_id"};
+		}
+				
+		# add the intron and skip the rest of the inner for-cycle
+		push @$gtf, \%intron;
+		last;
+	    }
+	}
+    }
+    
+    return $gtf;
+}
+
+
+########################################################
+################### filter write_gtf ###################
+########################################################
+
+sub init_write_gtf
+{
+    my ($options, $data) = @_;
+    
+    # default to name of the about file if no output file specified
+    my $default = change_filename_extension($data->{"about_filename"}, ".gtf");
+    initialize_option($options, "gtf_output_file", $default);
+    
+    # find the suffix, add it to filename
+    initialize_option($options, "gtf_output_suffix", '');
+    my $suffix = $options->{'gtf_output_suffix'};
+    if($options->{'gtf_output_file'} =~ /\.gtf$/) {
+	$options->{'gtf_output_file'} =~ s/(\.gtf)$/$suffix$1/;
+    }
+    else {
+	$options->{'gtf_output_file'} .= $suffix;
+    }
+
+    # open file for write
+    local(*GTF_FILE);
+    open(GTF_FILE, ">$options->{'gtf_output_file'}") 
+	or die "Cannot open file " . $options->{"gtf_output_file"} 
+               . " for writing\n";
+    $data->{"gtf_file"} = *GTF_FILE;
+}
+
+sub exec_write_gtf
+{
+    my ($options, $data, $gtf) = @_;
+    my $output = $data->{"gtf_file"};
+
+    my %gtf_mandatory_cols; 
+
+    foreach my $col (@gtf_col_keys) {
+	$gtf_mandatory_cols{$col} = 1;
+    }
+
+    delete $gtf_mandatory_cols{"attributes"};
+    delete $gtf_mandatory_cols{"comments"};
+    delete $gtf_mandatory_cols{"seqname"};
+
+    foreach my $gtf_line (@$gtf) {
+
+	# <seqname> 
+	printf $output "%s\t", $data->{"seqname"};
+
+	# <source> <feature> <start> <end> <score> <strand> <frame>
+	foreach my $col (@gtf_col_keys) {
+	    if(exists $gtf_mandatory_cols{$col}) {
+		die "Bad row (missing $col)", Dumper($gtf_line), " "
+		    unless defined $gtf_line->{$col};
+		print $output $gtf_line->{$col}."\t";
+	    }
+	}
+
+	my $space = '';
+
+	# [attributes]
+	if(exists $gtf_line->{"gene_id"}) {
+	    printf $output "%s%s \"%s\";", $space, "gene_id", 
+	    $gtf_line->{"gene_id"};
+	    $space = " ";
+	}
+
+	if(exists $gtf_line->{"transcript_id"}) {
+	    printf $output "%s%s \"%s\";", $space, "transcript_id", 
+	           $gtf_line->{"transcript_id"};
+	    $space = " ";
+	}
+
+	# [attributes] cont'd
+	foreach my $col (sort keys %$gtf_line) {
+	    if(
+	       !($col eq "seqname") 
+	       && !($col eq "comments") 
+	       && !($col eq "attributes") 
+	       && !($col eq "gene_id")
+	       && !($col eq "transcript_id")
+	       && !(exists $gtf_mandatory_cols{$col})) {
+		printf $output "%s%s \"%s\";", $space, 
+		$col, $gtf_line->{$col};
+		$space = " ";
+	    }
+	}
+
+	# [comments]
+	if(exists $gtf_line->{"comments"}) {
+	    print $output " \# ".$gtf_line->{"comments"};
+	}
+
+	print $output "\n";
+    }
+
+    return $gtf;
+}
+
+
+########################################################
+############# filter mark_low_score ####################
+########################################################
+
+sub init_mark_low_score
+{
+    my ($options, $data) = @_;
+
+    initialize_option($options, "low_score_threshold", 90, "number");
+}
+
+sub exec_mark_low_score
+{
+    my ($options, $data, $gtf, $fasta_sequence) = @_;
+
+    # mark gtf lines with score below threshold, or no score at all
+    foreach my $gtf_line (@$gtf) {
+	if(! looks_like_number($gtf_line->{"score"})) {
+	    $gtf_line->{"status"} = "bad";
+	}
+	elsif($gtf_line->{"score"} < $options->{"low_score_threshold"}) {
+	    $gtf_line->{"status"} = "bad";
+	}
+    }
+
+    return $gtf;
+}
+
+########################################################
+############# filter mark_bad_frame ####################
+########################################################
+
+sub init_mark_bad_frame
+{
+    my ($options, $data) = @_;
+}
+
+sub exec_mark_bad_frame
+{
+    my ($options, $data, $gtf, $fasta_sequence) = @_;
+
+    # group rows by transcript_id, mark those without
+    my %id2rows;
+    foreach my $row (@$gtf) {
+        if(exists $row->{"transcript_id"}) {
+            push @{$id2rows{$row->{"transcript_id"}}}, $row;
+        }
+    }
+
+    foreach my $transcript (values %id2rows) {
+
+        #collect all CDS in the transcript
+        my @exons = grep {$_->{'feature'} eq 'CDS'} @$transcript;
+
+        #skip transcripts with empty CDS
+        next if @exons==0;
+
+        my ($strand, $other_strand) = valid_strands($transcript);
+        if(defined $strand && !defined $other_strand) {
+            #exactly one strand
+
+            #check frame
+            @exons = sort by_transcript_id_and_start @exons;
+	    if($strand eq '-') {
+		@exons = reverse @exons;
+	    }
+	    
+	    my $frame;
+	    foreach my $exon (@exons) {
+		my $exonlen = $exon->{'end'} - $exon->{'start'} + 1;
+		if(!defined $exon->{'frame'}) {
+		    $exon->{'status'} = "bad";
+		}
+		else {
+		    if(!defined $frame) { $frame =  $exon->{'frame'}; }
+		    if($frame != $exon->{'frame'}) {
+			$exon->{'status'} = "bad";
+		    }
+		    $frame = (3 - ($exonlen - $frame + 3)%3 ) %3;
+		}
+	    }
+	}
+    }
+
+    return $gtf;
+}
+
+
+
+########################################################
+############## filter add_strand #######################
+########################################################
+
+sub init_add_strand
+{
+    my ($options, $data) = @_;
+
+    # do nothing (no options to check)
+}
+
+# compare function for sort
+# we sort rows according to transcript_id 
+# (rows with transcript_id undefined will be at the beginning)
+# two rows with the same transcript_id are sorted according to start
+sub by_transcript_id_and_start
+{
+    #my ($a, $b) = @_;
+
+    # check if both either have defined or both have undefined transcript_id
+    if(exists $a->{"transcript_id"} xor exists $b->{"transcript_id"}) {
+	if(exists $a->{"transcript_id"}) { return 1; }
+	else { return -1; }
+    }
+
+    if(exists $a->{"transcript_id"}) {
+	return ($a->{"transcript_id"} cmp $b->{"transcript_id"}) 
+	    || ($a->{"start"} <=> $b->{"start"});
+    }
+    else {
+	return ($a->{"start"} <=> $b->{"start"});
+    }
+}
+
+sub exec_add_strand
+{
+    my ($options, $data, $gtf) = @_;
+
+    # sort rows 
+    @$gtf = sort by_transcript_id_and_start @$gtf;
+
+    # skip rows with undefined transcript_id
+    my $i=0;
+    while(($i<scalar(@$gtf)) && (!exists $gtf->[$i]->{"transcript_id"})) {
+	$i++;
+    }
+
+    # go through all rows 
+    while($i<scalar(@$gtf)) {
+	my $transcript_id = $gtf->[$i]->{"transcript_id"};
+	my $last_strand = ".";
+	my $last_index = $i;
+
+	# go through all rows with the same transcript_id
+	while( $i<scalar(@$gtf) && 
+	       ($gtf->[$i]->{"transcript_id"} eq $transcript_id) ) {
+	    if($gtf->[$i]->{"strand"} =~ /^[+-]$/ 
+	       || ($i == scalar(@$gtf)-1) 
+	       || ( $gtf->[$i+1]->{"transcript_id"} ne $transcript_id)) {
+		if( ($last_strand eq $gtf->[$i]->{"strand"}) 
+		    || ($last_strand eq ".") 
+		    || ($gtf->[$i]->{"strand"} eq ".") ) {	
+		    # choose the strand to be either last_strand 
+                    # or current according to whether which one is not '.' 
+		    my $strand = $last_strand;
+		    if($strand eq ".") {
+			$strand = $gtf->[$i]->{"strand"};
+		    }
+
+		    # set all the strands between last_index and 
+		    # current index i to common strand
+		    for(my $j=$last_index; $j<=$i; $j++) {
+			$gtf->[$j]->{"strand"} = $strand;
+		    }
+		}
+		else {	
+		    # if the strands differ, then mark both the rows as bad
+		    $gtf->[$i]->{"status"} = "bad";
+		    $gtf->[$last_index]->{"status"} = "bad";
+		}
+
+		$last_strand = $gtf->[$i]->{"strand"};
+		$last_index = $i;
+	    }
+
+	    $i++;
+	}
+    }
+    return $gtf;
+}
+
+
+########################################################
+############## filter remove_bad_transcripts ############
+########################################################
+
+# generic function which removes transcripts
+sub remove_transcripts
+{
+    my ($is_incorrect_transcript, $options, $data, $gtf) = @_;
+
+    # sort rows 
+    @$gtf = sort by_transcript_id_and_start @$gtf;
+
+    # new array of rows to for transcripts which are not bad
+    my @gtf_new;
+
+    # copy all the rows with undefined transcript_id, that are ok
+    my $i=0;
+    while(($i < scalar(@$gtf)) && (!exists $gtf->[$i]->{"transcript_id"}) ) {
+	my @transcript = ($gtf->[$i]);
+	if (! &{$is_incorrect_transcript}($options, \@transcript) ) {
+	    push @gtf_new, @transcript;
+	}
+	$i++;
+    }
+
+    # go through all rows with defined transcript_id
+    while($i<scalar(@$gtf)) {
+	my @transcript;
+	my $transcript_id = $gtf->[$i]->{"transcript_id"};
+	my $last_index = $i;
+
+	# go through all rows with the same transcript_id
+	while( ($i<scalar(@$gtf)) 
+	       && ($gtf->[$i]->{"transcript_id"} eq $transcript_id) ) {
+	    push @transcript, $gtf->[$i];
+	    $i++;
+	}
+
+	# if is the transcript is ok, copy it
+	# otherwise do not copy it
+	if (! &{$is_incorrect_transcript}($options, \@transcript) ) {
+	    push @gtf_new, @transcript;
+	}
+    }
+
+    return \@gtf_new;
+}
+
+
+sub init_remove_bad_transcripts
+{
+    my ($options, $data) = @_;
+    # this filter has no options
+}
+
+
+sub exec_remove_bad_transcripts
+{
+    my ($options, $data, $gtf) = @_;
+    return remove_transcripts(\&is_bad_transcript, $options, $data, $gtf);
+}
+
+sub is_bad_transcript
+{
+    my ($options, $transcript) = @_;
+
+    # for the rows in the transcript
+    foreach my $gtf_line (@$transcript) {
+	if(exists($gtf_line->{"status"}) && ($gtf_line->{"status"} eq "bad")) {
+	    # bad transcript
+	    return 1;
+	}
+    }
+
+    return 0;
+}
+
+
+########################################################
+############## filter remove_short_transcripts ##########
+########################################################
+
+sub init_remove_short_transcripts
+{
+    my ($options, $data) = @_;
+
+    initialize_option($options, "exon_feature", "exon");
+    initialize_option($options, "minimum_exons", 2, "positive number");
+    initialize_option($options, "minimum_exon_length", 0, "nonnegative number");
+}
+
+sub exec_remove_short_transcripts
+{
+    my ($options, $data, $gtf) = @_;
+    return remove_transcripts(\&is_short_transcript, $options, $data, $gtf);
+}
+
+# returns yes, if the transcript has small number of exons
+sub is_short_transcript
+{
+    my ($options, $transcript) = @_;
+    my $exon_feature_count = 0;
+    my $exon_length = 0;
+
+    # for the rows in the transcript
+    foreach my $gtf_line (@$transcript) {
+	# count the number of exons in the transcript
+	if($gtf_line->{"feature"} eq  $options->{"exon_feature"}) {
+	    $exon_feature_count++;
+	    $exon_length += $gtf_line->{"end"} 
+	                    - $gtf_line->{"start"} + 1; 
+	}
+    }
+
+    return $exon_feature_count < $options->{"minimum_exons"} 
+    || $exon_length < $options->{"minimum_exon_length"};
+}
+
+
+########################################################
+######### filter remove_nonsense_transcripts ############
+########################################################
+
+sub init_remove_nonsense_transcripts
+{
+    my ($options, $data) = @_;
+
+    initialize_option($options, "exon_feature", "exon");
+
+    initialize_option($options, "maximum_splice_gap", 0, "nonnegative number");
+
+    initialize_option($options, "maximum_splice_overlap", 0, 
+		      "nonnegative number");
+}
+
+sub exec_remove_nonsense_transcripts
+{
+    my ($options, $data, $gtf) = @_;
+    return remove_transcripts(\&is_nonsense_transcript, $options, $data, $gtf);
+}
+
+# check whether exons and introns in the transcript alternate
+# we assume that the transcript is already sorted
+sub is_nonsense_transcript
+{
+    my ($options, $transcript) = @_;
+
+    my $bad = find_nonsense_in_transcript($options, $transcript);
+
+    if(@$bad) { return 1; }
+    else { return 0; }
+}
+
+# find places where exons and introns do not properly alternate
+# we assume that the transcript is already sorted
+sub find_nonsense_in_transcript
+{
+    my ($options, $transcript) = @_;
+
+    my @bad;
+
+    my $last_end = undef;
+    my $last_feature = undef;
+    my $last_line = undef;
+
+    # for the rows in the transcript
+    for(my $line_num = 0; $line_num<@$transcript; $line_num++) {
+	my $gtf_line = $transcript->[$line_num];
+
+	# if it is exon or intron
+	next unless $gtf_line->{"feature"} eq $options->{"exon_feature"}
+	|| $gtf_line->{"feature"} eq "intron";
+
+	# if feature is equal to previous one
+	if((defined $last_feature) 
+	   && ($last_feature eq $gtf_line->{"feature"})) {
+	    # exons and introns do not alternate
+	    push @bad, $last_line;
+	    push @bad, $line_num;
+	}
+	elsif(defined $last_feature) {
+	    # compute the gap and overlap 
+	    # between this intron/exon and previous one
+	    my $gap = $gtf_line->{"start"} - $last_end - 1;
+	    my $overlap = -$gap;
+	    
+	    #printf STDERR "gap=%d overlap=%d\n", $gap, $overlap;
+	    
+	    # if the gap or overlap between consecutive features is too big
+	    if( ($gap > $options->{"maximum_splice_gap"}) 
+		|| ($overlap > $options->{"maximum_splice_overlap"}) ) {
+		push @bad, $last_line;
+		push @bad, $line_num;
+	    }
+	}
+	
+	$last_feature = $gtf_line->{"feature"};
+	$last_end = $gtf_line->{"end"};
+	$last_line = $line_num;
+    }
+
+    return \@bad;
+}
+	
+
+########################################################
+######### filter split_nonsense_transcripts ############
+########################################################
+sub init_split_nonsense_transcripts
+{
+    my ($options, $data) = @_;
+
+    initialize_option($options, "exon_feature", "exon");
+
+    initialize_option($options, "maximum_splice_gap", 0, "nonnegative number");
+
+    initialize_option($options, "maximum_splice_overlap", 0, 
+		      "nonnegative number");
+}
+
+sub exec_split_nonsense_transcripts
+{
+    my ($options, $data, $gtf) = @_;
+
+    # sort rows 
+    @$gtf = sort by_transcript_id_and_start @$gtf;
+
+    #counter for new transcript id's
+    my $new_id = 0;
+
+    # the rows with undefined transcript_id do not need to be checked
+    my $i=0;
+    while(($i < scalar(@$gtf)) && (!exists $gtf->[$i]->{"transcript_id"}) ) {
+        $i++;
+    }
+
+    # go through all rows with defined transcript_id
+    while($i<scalar(@$gtf)) {
+        my @transcript;
+        my $transcript_id = $gtf->[$i]->{"transcript_id"};
+        my $last_index = $i;
+
+        # go through all rows with the same transcript_id
+        while( ($i<scalar(@$gtf)) 
+               && ($gtf->[$i]->{"transcript_id"} eq $transcript_id) ) {
+            push @transcript, $gtf->[$i];
+            $i++;
+        }
+
+	# find problematic places
+	my $bad = find_nonsense_in_transcript($options, \@transcript);
+	
+	if(@$bad) {
+	    die unless @$bad%2==0;
+	    my %last; #positions of last row in each partial transcript
+	    for(my $j=0; $j<@$bad; $j++) {
+		my $bad_num = $bad->[$j];
+		die join(",", @$bad). " tr:" . scalar(@transcript) 
+		    unless $bad_num<@transcript;
+		$transcript[$bad_num]{"status"} = "bad";
+		if($j%2==0) {
+		    $last{$bad_num} = 1;
+		}
+	    }
+	    $last{@transcript-1} = 1;
+
+	    #rewrite trasncript_id
+	    for(my $j=0; $j<@transcript; $j++) {
+		$transcript[$j]{'transcript_id'} .= "split" . $new_id;
+		if($last{$j}) { $new_id++;}
+	    }
+	}
+    }
+
+    return $gtf;
+}
+
+
+########################################################
+####### filter remove_incomplete_transcripts ############
+########################################################
+
+sub init_remove_incomplete_transcripts
+{
+    my ($options, $data) = @_;
+    initialize_option($options, "maximum_informant_drift", 10,
+		      "nonnegative number");
+}
+
+sub exec_remove_incomplete_transcripts
+{
+    my ($options, $data, $gtf) = @_;
+    return remove_transcripts(\&is_incomplete_transcript, $options, $data, $gtf);
+}
+
+sub is_incomplete_transcript
+{
+    my ($options, $transcript) = @_;
+    my $info_length = undef;
+
+    # find the info_length of the transcript
+    foreach my $gtf_line (@$transcript) {
+	if(exists $gtf_line->{"info_length"}) {
+	    if(!defined $info_length) {
+		$info_length = $gtf_line->{"info_length"};
+	    }
+	    elsif($info_length != $gtf_line->{"info_length"}) {
+		printf STDERR "Warning: info_length does not match for all rows in the transcript, transcript_id=%s.\n", $gtf_line->{"transcript_id"};
+	    }
+	}
+    }
+	
+    my $is_near_start = 0;
+
+    # if info_length is undefined, then we do not check the right end
+    my $is_near_end = !defined $info_length; 
+    my $is_within_bounds = 1;
+    
+    # for rows the in the transcript
+    foreach my $gtf_line (@$transcript) {
+	# if there is row with info_start "near" 1
+	if( (exists $gtf_line->{"info_start"}) 
+	    && (abs($gtf_line->{"info_start"}-1) 
+		<= $options->{"maximum_informant_drift"}) ) {
+	    #print STDERR "case 1\n";
+	    #print STDERR Dumper($gtf_line);
+	    $is_near_start = 1;
+	}
+		
+	# if there is row  with info_end "near" info_length, or info_length is undefined
+	if( (defined $info_length) && (exists $gtf_line->{"info_end"}) 
+	    && (abs($gtf_line->{"info_end"}-$info_length) <= $options->{"maximum_informant_drift"}) ) {
+	    #print STDERR "case 2\n";
+	    #print STDERR Dumper($gtf_line);
+	    $is_near_end = 1;
+	}
+	
+	# check if all info_starts are not much more smaller than 1
+	if( (exists $gtf_line->{"info_start"}) && ($gtf_line->{"info_start"} < 1-$options->{"maximum_informant_drift"}) ) {
+	    #print STDERR "case 3\n";
+	    #print STDERR Dumper($gtf_line);
+	    $is_within_bounds = 0;
+	}
+		
+	# check if all info_ends are not much more larger than info_length
+	if( (defined $info_length) && (exists $gtf_line->{"info_end"}) 
+	    && ($gtf_line->{"info_end"} > $info_length + $options->{"maximum_informant_drift"}) ) {
+	    #print STDERR "case 4\n";
+	    #print STDERR Dumper($gtf_line);
+	    $is_within_bounds = 0;
+	}
+    }
+    
+    return !($is_near_start && $is_near_end && $is_within_bounds);
+}
+
+
+########################################################
+####### filter remove_overlapping_transcripts ############
+########################################################
+
+sub init_remove_overlapping_transcripts
+{
+    my ($options, $data) = @_;
+    initialize_option($options, "maximum_overlap", 0,
+		      "nonnegative number");
+}
+
+sub exec_remove_overlapping_transcripts
+{
+    my ($options, $data, $gtf) = @_;
+
+    my @transcripts;   #each transcript has start, end, score,
+                       #and a list of rows.
+    my %id2transcript;  #temporary index to @transcripts   
+                        #by transcript_id
+
+
+    #sort rows to transcripts
+    foreach my $row (@$gtf) {
+	my $transcript = {'start' => $row->{'start'},
+			  'end' => $row->{'end'},
+			  'score' => $row->{'score'},
+			  'rows'=> [$row]};
+	if(!looks_like_number($transcript->{'score'})) {
+	    $transcript->{'score'} = 1;
+	}
+	   
+	if(exists $row->{'transcript_id'}) {
+	    my $id = $row->{'transcript_id'};
+	    if(!exists $id2transcript{$id}) {   #new transcript
+		$id2transcript{$id} = $transcript;
+		push @transcripts, $transcript;
+	    }
+	    else { #add to existing transcript
+		my $real = $id2transcript{$id};
+		push @{$real->{'rows'}}, $row;
+		$real->{'start'} = min($real->{'start'},
+				       $transcript->{'start'});
+		$real->{'end'} = max($real->{'end'},
+				     $transcript->{'end'});
+		$real->{'score'} = $real->{'score'} + $transcript->{'score'};
+	    }
+	}
+	else { #no transcipt_id - add on its own
+	    push @transcripts, $transcript;
+	}	   
+    }
+
+    #remove rows from the old array
+    $gtf = [];
+
+    # remove maximum_overlap from end of each transcript, to ensure that 
+    # such overlaps are allowed; but keep at least 1 nucleotide
+    foreach my $transcript (@transcripts) {
+	$transcript->{'end'} -= $options->{'maximum_overlap'};
+	$transcript->{'end'} 
+	= max($transcript->{'start'}, $transcript->{'end'});
+    }
+
+    # sort transcripts by end coordinate
+    @transcripts = sort {$a->{'end'} <=> $b->{'end'}} @transcripts;
+
+    my @chosen;
+    foreach my $transcript (@transcripts) {
+	#choose the current transcript unless it overlaps 
+        #a better one in array @chosen.
+	my $is_good = 1;
+	my $last = @chosen-1;
+	while($last>=0 && $chosen[$last]{'end'} >= $transcript->{'start'}) {
+	    if($chosen[$last]{'score'} > $transcript->{'score'}) {
+		$is_good = 0;
+	    }
+	    $last--;
+	}
+
+	if($is_good) {
+	    #add current transcript, remove all that overlap
+	    if($last+1 < @chosen) {
+		delete @chosen[$last+1..@chosen-1];
+	    }
+	    push @chosen, $transcript;
+	}
+    }
+	
+    #copy chosen transcripts back
+    foreach my $transcript (@chosen) {
+	push @$gtf, @{$transcript->{'rows'}};
+    }
+
+    return $gtf;
+}
+
+
+
+########################################################
+####### filter normalize_score #########################
+########################################################
+
+sub init_normalize_score
+{
+    my ($options, $data) = @_;
+
+    # this filter has no options
+}
+
+sub exec_normalize_score
+{
+    my ($options, $data, $gtf) = @_;
+
+    # for every row
+    foreach my $gtf_line (@$gtf) {
+	if(looks_like_number($gtf_line->{"score"}) ) {
+	    # normalize score by length
+	    $gtf_line->{"score"} /= ($gtf_line->{"end"} - $gtf_line->{"start"} + 1);
+	}
+    }
+
+    return $gtf;
+}
+
+
+
+########################################################
+####### filter multiply_score ##########################
+########################################################
+
+sub init_multiply_score
+{
+    my ($options, $data) = @_;
+    
+    initialize_option($options, "score_multiplier", 100, "number"); 
+}
+
+sub exec_multiply_score
+{
+    my ($options, $data, $gtf) = @_;
+
+    # for every row
+    foreach my $gtf_line (@$gtf) {
+	if(looks_like_number($gtf_line->{"score"}) ) {
+	    # multiply score by a constant 
+	    $gtf_line->{"score"} *= $options->{"score_multiplier"};
+	}
+    }
+
+    return $gtf;
+}
+
+
+########################################################
+####### filter change_score ##########################
+########################################################
+
+sub init_change_score
+{
+    my ($options, $data) = @_;
+    
+    initialize_option($options, "change_score_operation", "log"); 
+    initialize_option($options, "change_score_parameter", ""); 
+    initialize_option($options, "score_feature", "*");
+}
+
+sub exec_change_score
+{
+    my ($options, $data, $gtf) = @_;
+
+    # for every row
+    foreach my $gtf_line (@$gtf) {
+        # skip rows that do not have specified features
+        next unless
+            matches($gtf_line->{"feature"}, $options->{"score_feature"});
+
+	#skip rows with undefined score
+	my $score = $gtf_line->{"score"};
+	next unless looks_like_number($score);
+
+	if($options->{"change_score_operation"} eq 'log') {
+	    # take a logarithm
+	    if($score>0) {
+		$gtf_line->{"score"} = log($score);
+	    }
+	}
+	else {
+	    die "Unsupported operation '" . $options->{"change_score_operation"}. "'";
+	}
+    }
+
+    return $gtf;
+}
+
+########################################################
+####### filter set_score ###############################
+########################################################
+
+sub init_set_score
+{
+    my ($options, $data) = @_;
+
+    initialize_option($options, "score_feature", "*");  
+    if(!exists $options->{"score_value"} 
+       || $options->{"score_value"} ne "length") {
+	initialize_option($options, "score_value", 0, "number");
+    }
+}
+
+sub exec_set_score
+{
+    my ($options, $data, $gtf) = @_;
+
+    # for every row
+    foreach my $gtf_line (@$gtf) {
+	# skip rows that do not have specified features
+	next unless     
+	    matches($gtf_line->{"feature"}, $options->{"score_feature"});
+	# change score
+	if($options->{"score_value"} eq "length" ) {
+	    # set score to length
+	    $gtf_line->{"score"} = $gtf_line->{'end'} 
+	                           - $gtf_line->{'start'} + 1;
+	}
+	else {
+	    # set score to a constant 
+	    $gtf_line->{"score"} = $options->{"score_value"};
+	}
+    }
+
+    return $gtf;
+}
+
+
+########################################################
+####### filter add_start_site ##########################
+########################################################
+
+sub init_add_start_site
+{
+    my ($options, $data) = @_;
+
+    initialize_option($options, "start_codons", "ATG"); 
+}
+
+sub exec_add_start_site
+{
+    my ($options, $data, $gtf, $fasta) = @_;
+
+    # for every row
+    foreach my $gtf_line (@$gtf) {
+	# candidate for start site
+	if( ($gtf_line->{"feature"} eq "CDS") 
+	    && ($gtf_line->{"frame"} == 0) 
+	    && (exists $gtf_line->{"info_start"}) 
+	    && ($gtf_line->{"info_start"} == 1) 
+	    && ($gtf_line->{"strand"} =~ /^[+-]$/)
+	    ) {
+	    # start codon
+	    my $codon;
+
+	    if($gtf_line->{"strand"} eq "+") {
+		$codon = extract_sequence($gtf_line->{"start"}, $gtf_line->{"start"}+2, 
+					  "+", $fasta); 
+	    }
+	    else {   # if($gtf_line->{"strand"} eq "-")
+		$codon = extract_sequence($gtf_line->{"end"}-2, $gtf_line->{"end"}, 
+					  "-", $fasta); 
+	    }
+	    
+	    # check start codon
+	    if(is_start_codon($codon, $options->{'start_codons'})) {
+		my %start_site;
+		$start_site{"seqname"} = $data->{"seqname"};
+		$start_site{"source"} = "filter_add_start_site";
+		$start_site{"feature"} = "start_site";
+		$start_site{"score"} = $gtf_line->{"score"};
+		$start_site{"strand"} = $gtf_line->{"strand"};
+		$start_site{"frame"} = 0;
+
+		if($gtf_line->{"strand"} eq "+") {
+		    $start_site{"start"} = $start_site{"end"} = $gtf_line->{"start"};
+		}
+		else {
+		    $start_site{"start"} = $start_site{"end"} = $gtf_line->{"end"};
+		}
+
+		# optional attributes
+		if(exists $gtf_line->{"transcript_id"}) {
+		    $start_site{"transcript_id"} = $gtf_line->{"transcript_id"};
+		}
+
+		if(exists $gtf_line->{"info_name"}) {
+		    $start_site{"info_name"} = $gtf_line->{"info_name"};
+		}
+
+		push @$gtf, \%start_site;
+	    }
+	}
+    }
+    return $gtf;
+}
+
+########################################################
+####### filter add_stop_site ###########################
+########################################################
+
+sub init_add_stop_site
+{
+    my ($options, $data) = @_;
+
+    initialize_option($options, "maximum_stop_site_drift", 1, 
+		      "nonnegative number");
+
+    initialize_option($options, "stop_codons", "TAA TAG TGA"); 
+}
+
+sub exec_add_stop_site
+{
+    my ($options, $data, $gtf, $fasta) = @_;
+
+    # for every row
+    foreach my $gtf_line (@$gtf) {
+	# candidate for stop site
+	if( ($gtf_line->{"feature"} eq "CDS") 
+	    && (($gtf_line->{"end"} - $gtf_line->{"start"} + 1 - $gtf_line->{"frame"}) % 3 == 0) 
+	    && (exists $gtf_line->{"info_end"}) 
+	    && (exists $gtf_line->{"info_length"}) 
+	    && (abs($gtf_line->{"info_end"} - $gtf_line->{"info_length"}) <= $options->{"maximum_stop_site_drift"}) 
+	    && ($gtf_line->{"strand"} =~ /^[+-]$/)
+	    ) {
+	    # start codon
+	    my $codon1;
+	    my $codon2;
+
+	    #
+	    #                  end of the CDS
+	    #                        |
+	    #          a CDS         v
+	    # ... xxxxxxxxxxxxxxxxxxxx
+	    #                      AAABBB            <- stop codon is either AAA or BBB
+	    #                        ^  ^
+	    #                        |  |
+	    #                  stop site will be one these two positions
+	    #                        
+	    #
+	    #
+	    #  On the reverse strand it looks reversed :-)
+	    #  
+	    #                                        end of the CDS
+	    #                                          |
+	    #                                          v     a CDS
+	    #                                          xxxxxxxxxxxxxxxxxxxx...
+	    #    stop codon is either AAA or BBB -> BBBAAA
+	    #                                       ^  ^
+	    #                                       |  |
+	    #                                      stop site will be one these two positions
+	    #
+	    #
+
+	    if($gtf_line->{"strand"} eq "+") {
+		$codon1 = extract_sequence($gtf_line->{"end"}-2, $gtf_line->{"end"}, 
+					   "+", $fasta); 
+		$codon2 = extract_sequence($gtf_line->{"end"}+1, $gtf_line->{"end"}+3, 
+					   "+", $fasta); 
+	    }
+	    else {		# if($gtf_line->{"strand"} eq "-")
+		$codon1 = extract_sequence($gtf_line->{"start"}, $gtf_line->{"start"}+2, 
+					   "-", $fasta); 
+		$codon2 = extract_sequence($gtf_line->{"start"}-3, $gtf_line->{"start"}-1, 
+					   "-", $fasta); 
+	    }
+
+	    # check whether stop codon is one of the allowed codons
+	    my $ok1 = is_stop_codon($codon1, $options->{'stop_codons'});
+	    my $ok2 = is_stop_codon($codon2, $options->{'stop_codons'});
+
+	    # cook up stop site
+	    my %stop_site;
+
+	    if($ok1) {
+		if($gtf_line->{"strand"} eq "+") {
+		    $stop_site{"start"} = $stop_site{"end"} = $gtf_line->{"end"};
+		}
+		else {		# strand eq "-"
+		    $stop_site{"start"} = $stop_site{"end"} = $gtf_line->{"start"};
+		}
+	    }
+	    elsif($ok2) {
+		if($gtf_line->{"strand"} eq "+") {
+		    $stop_site{"start"} = $stop_site{"end"} = $gtf_line->{"end"}+3;
+		}
+		else {		# strand eq "-"
+		    $stop_site{"start"} = $stop_site{"end"} = $gtf_line->{"start"}-3;
+		}
+	    }
+
+	    if($ok1 || $ok2) {
+		$stop_site{"seqname"} = $data->{"seqname"};
+		$stop_site{"source"} = "filter_add_stop_site";
+		$stop_site{"feature"} = "stop_site";
+		$stop_site{"score"} = $gtf_line->{"score"};
+		$stop_site{"strand"} = $gtf_line->{"strand"};
+		$stop_site{"frame"} = 1;
+
+		# optional attributes
+		if(exists $gtf_line->{"transcript_id"}) {
+		    $stop_site{"transcript_id"} = $gtf_line->{"transcript_id"};
+		}
+
+		if(exists $gtf_line->{"info_name"}) {
+		    $stop_site{"info_name"} = $gtf_line->{"info_name"};
+		}
+
+		# add the stop site
+		push @$gtf, \%stop_site;
+	    }
+	}
+    }
+    return $gtf;
+}
+
+
+########################################################
+####### filter add_CDS #################################
+########################################################
+
+sub init_add_CDS
+{
+    my ($options, $data) = @_;
+
+    #store the only option
+    initialize_option($options, "find_longest_ORF", "false", 
+		      "boolean");
+    initialize_option($options, "prefer_first_ORF", "false", 
+		      "boolean");
+
+    initialize_option($options, "minimum_ORF_length", 0, "nonnegative number");
+
+    initialize_option($options, "stop_codons", "TAA TAG TGA"); 
+    initialize_option($options, "start_codons", "ATG"); 
+}
+
+
+sub find_longest_orf
+{
+    my ($seq, $frame, $options) = @_;
+    #find the longest orf in the sequence in frame $frame
+    #ORF must start with a start codon and end with stop codon
+    # and it does not have any in-frame stop codon in the middle.
+    #It may be incomplete (extends beyond transcript boundary).
+    #Return the number of nucl. to skip at the beginning,
+    #and the length of the ORF, including the last stop codon (if any)
+
+    my $n = length($seq);
+    my $codons = POSIX::floor(($n-$frame)/3);
+    
+    my $skip;
+    my $max_len = 0;
+
+    # go from last codon to the first 
+    #and check distance from each start to nearest stop
+    my $last_stop = $frame + ($codons-1)*3;  # end of sequence (start of last codon)
+    for(my $pos = $frame + ($codons-1)*3;  
+	$pos>=$frame; $pos-=3) {
+	if(is_stop_codon(substr($seq, $pos, 3), $options->{'stop_codons'})) {
+	    $last_stop = $pos;
+	}
+	elsif(is_start_codon(substr($seq, $pos, 3), $options->{'start_codons'}) 
+	      || $pos == $frame) {
+	    my $len = $last_stop-$pos+3;
+	    if($len > $max_len) {
+		$max_len = $len;
+		$skip = $pos;
+	    }
+	}
+    }
+
+    return ($skip, $max_len);
+}
+
+
+sub find_orf
+{
+    my ($seq, $frame, $options) = @_;
+    #check if the sequence in the given frame does not have 
+    #any in-frame stop codon except possibly at the end
+    #return the number of nucl. to skip at the beginning,
+    #and the length of the ORF, including the last stop codon (if any)
+
+    my $frame_ok = 1;
+    my $len = 0;
+    for(my $pos=$frame; $pos+6 <= length($seq); $pos+=3) {
+	if(is_stop_codon(substr($seq, $pos, 3), $options->{'stop_codons'})) {
+	    $frame_ok = 0;
+	    last;
+	}
+	$len+=3;
+    }
+
+    #add the last codon if any
+    if($frame + $len + 3 <= length($seq)) {
+	$len += 3;
+    }
+
+    if($frame_ok) {
+	return ($frame, $len);
+    }
+    else {
+	return;
+    }
+}
+
+sub restrict_transcript
+{
+  my ($exons_in, $strand, $skip, $len, $frame) = @_;
+  #Assuming the rows in array @$exons are one transcript,
+  #return new rows that do not contain first $skip nucleotides
+  #and total length of the new transcript is $len.
+  #Frame is added starting at the specified value or 
+  #at the original frame if $frame parameter has value -1
+  #At the end of transcript the frame should be 0.
+
+  die unless defined $frame;
+
+  my @result;
+
+  #order exons as in transcript
+  my @exons = sort by_transcript_id_and_start @$exons_in;
+  if($strand eq '-') {
+      @exons = reverse @exons;
+  }
+
+  foreach my $exon (@exons) {
+      my $exonlen = $exon->{'end'} - $exon->{'start'} + 1;
+      
+      if($exonlen <= $skip) {  #whole exon will be skipped
+	  $skip -= $exonlen;
+	  next;
+      }
+      elsif($len <= 0) { next; } #whole new transcript found already
+      else {
+	  my $skip_start = $skip;
+	  $skip = 0;
+	  my $skip_end = max(0, $exonlen - $skip_start - $len);
+	  $len -= $exonlen - $skip_end - $skip_start;
+	  if($strand eq '-') {
+	      ($skip_start, $skip_end) = ($skip_end, $skip_start);
+	  }
+
+	  my %CDS = %$exon;
+	  $CDS{'start'} += $skip_start;
+	  $CDS{'end'} -= $skip_end;
+	  $CDS{'strand'} = $strand;
+	  die unless $CDS{'start'} <= $CDS{'end'};
+
+	  my $newframe;  #compute frame based on exon info, if any
+	  if(defined $exon->{'frame'} && $exon->{'frame'} ne '.') {
+	      if($strand eq '+') {
+		  #take exon frame,
+                  #move it by difference between exon and cds start
+		  $newframe = (3+$exon->{'frame'} 
+			       - ($CDS{'start'}-$exon->{'start'})%3)%3;
+	      }
+	      else {
+		  #move by diff. in ends
+		  $newframe = (3+$exon->{'frame'} 
+			       - ($exon->{'end'}-$CDS{'end'})%3)%3;
+	      }
+	  }
+
+	  if($frame == -1) {  # if no frame given, use one computed
+	      die unless defined $newframe;
+	      $frame = $newframe;
+	      die unless $frame==0 || $frame==1 || $frame==2;
+	  }
+	  elsif(defined $newframe && $frame ne $newframe) {
+	      warn "Conflicting frames $frame $newframe $exon->{'transcript_id'} $exon->{'start'}";
+	  }
+	  $CDS{'frame'} = $frame;
+	  $frame = (3 - ($CDS{'end'} - $CDS{'start'} + 1 - $frame + 3)%3 ) %3;
+	  push @result, \%CDS;
+      }
+  }
+
+  die "$exons[0]{'transcript_id'} $frame $len $skip" unless $frame == 0 && $len == 0 && $skip == 0;
+
+  return \@result;
+}
+
+sub extract_transcript_sequence
+{
+  my ($exons, $strand, $fasta) = @_;
+  #concatenate sequences of all rows in @$exons and 
+  #reverse if $strand is '-'.
+
+  die $strand unless $strand eq '+' || $strand eq '-';
+
+  my @exons = sort by_transcript_id_and_start @$exons;
+
+  my $seq = '';
+  foreach my $row (@exons) {
+      $seq .= extract_sequence($row->{'start'}, $row->{'end'},
+			       '+', $fasta);
+  }
+
+  if($strand eq '-') {
+      $seq = reverse_complement($seq);
+  }
+
+  return $seq;
+}
+
+
+sub valid_strands
+{
+    my ($exons) = @_;
+    #return the list of strands compatible with all strand 
+    #information in @$exons
+
+    #collect all strand information
+    my %strands;
+    foreach my $row (@$exons) {
+	if($row->{'strand'} =~ /^[+-]$/) {
+	    $strands{$row->{'strand'}} = 1;
+	}
+    }
+
+    if(keys %strands == 0) {  
+	return ('+', '-');       #no known strand - try both
+    } 
+    elsif(keys %strands == 2) {  #both strands - bad transcript
+	return ();
+    }
+    else { 
+	die unless keys %strands == 1; 
+	return keys %strands;
+    }
+}
+
+
+sub exec_add_CDS
+{
+    my ($options, $data, $gtf, $fasta) = @_;
+
+    my $no_frame = 0;
+    my $more_frames = 0;
+    my $no_id = 0;
+
+    # group rows by transcript_id, mark those without
+    my %id2rows;
+    foreach my $row (@$gtf) {
+	if(!exists $row->{"transcript_id"}) {
+	    $row->{'status'} = 'bad';
+	    $no_id++;
+	}
+	else {
+	    push @{$id2rows{$row->{"transcript_id"}}}, $row;
+	}
+    }
+
+    foreach my $transcript (values %id2rows) {
+
+	#skip transcript if CDS already present
+	my $was_CDS = grep {$_->{'feature'} eq 'CDS'} @$transcript;
+	next if $was_CDS;  
+
+	#collect all exons in the transcript
+	my @exons = grep {$_->{'feature'} eq 'exon'} @$transcript;
+
+	my @strands = valid_strands($transcript);
+
+	my $CDS;        # ref. to list of CDS exons in the result
+	my $found = 0;  # was a good ORF found? 
+
+	if($options->{"find_longest_ORF"} eq "true") {
+	    my $max_len = 0;
+
+	    foreach my $strand (@strands) {
+		my $seq = extract_transcript_sequence(\@exons, 
+						      $strand, $fasta);
+		
+		foreach my $frame (0..2) {
+		    my ($skip, $len) = find_longest_orf($seq, $frame, $options);
+		    
+		    if($len > $max_len && $len > $options->{"minimum_ORF_length"}) {
+			#longer orf than found so far
+
+			#some checks
+			die unless $skip>=0 && $len>0 && $len%3==0
+			    && $skip+$len<=length($seq)
+			    && defined find_orf(substr($seq, $skip, $len),0,$options);
+
+			$CDS = restrict_transcript(\@exons, $strand, 
+						   $skip, $len, 0);
+			$max_len = $len;
+			$found = 1;
+		    }
+		} # for each frame
+	    } # for each strand	  
+	}
+	else {  # find_longest_orf = false
+	
+	    # find the unique ORF extending across the whole transcript
+	    my $good_frames = 0;  
+	    my $was_first = 0;  #was the first frame good?
+	    foreach my $strand (@strands) {
+		my $seq = extract_transcript_sequence(\@exons, 
+						      $strand, $fasta);
+		
+		foreach my $frame (0..2) {
+		    my ($skip, $len) = find_orf($seq, $frame, $options);
+		    
+		    if(defined $skip) {
+			$good_frames++;
+			if($frame==0) { $was_first=1; }
+			if($good_frames == 1) {
+			    $CDS = restrict_transcript(\@exons, $strand, 
+						       $skip, $len, 0);
+			}
+		    }
+		} # for each frame
+	    } # for each strand
+
+	    #one frame found or more frames, but first is prefered
+	    if($good_frames == 1 
+	       || ($options->{'prefer_first_ORF'} eq 'true'
+		   && @strands==1
+		   && $good_frames>0 && $was_first)) {
+		$found = 1; 
+	    }
+	    elsif($good_frames == 0) { $no_frame++; }
+	    else { $more_frames++; }
+
+	} # find_longest_orf = false
+
+
+	if($found) {
+	    #change feature of new exons to CDS, source to add_CDS
+	    foreach my $row (@$CDS) {
+		$row->{'feature'} = 'CDS';
+		$row->{'source'} = 'filter_add_CDS';
+	    }
+	    push @$gtf, @$CDS;
+	}
+	else { # not found	    
+	    foreach my $exon (@$transcript) {
+		$exon->{'status'} = 'bad';
+	    }
+	}
+    }
+
+    if($options->{"find_longest_ORF"} eq "false") {
+	printf STDERR " (%d no transcript_id, %d no frame, %d >1 frames) ",
+	$no_id, $no_frame, $more_frames;
+    }
+
+    return $gtf;
+}
+
+
+########################################################
+####### filter add_start_codon #########################
+########################################################
+
+sub init_add_start_codon
+{
+    my ($options, $data) = @_;
+
+    initialize_option($options, "start_codons", "ATG"); 
+    initialize_option($options, "check_info", "false", "boolean"); 
+}
+
+sub exec_add_start_codon
+{
+    my ($options, $data, $gtf, $fasta) = @_;
+
+    my $no_start = 0;
+
+    # group rows by transcript_id, mark those without
+    my %id2rows;
+    foreach my $row (@$gtf) {
+	if(!exists $row->{"transcript_id"}) {
+	    $row->{'status'} = 'bad';
+	}
+	else {
+	    push @{$id2rows{$row->{"transcript_id"}}}, $row;
+	}
+    }
+
+    foreach my $transcript (values %id2rows) {
+
+	#skip transcript if start codon already present
+	my $was = grep {$_->{'feature'} eq 'start_codon'} @$transcript;
+	next if $was;  
+
+	#collect all CDS in the transcript
+	my @exons = grep {$_->{'feature'} eq 'CDS'} @$transcript;
+
+	#skip transcripts without CDS
+	next if @exons==0;
+
+	my $start_codon;
+
+	my ($strand, $other_strand) = valid_strands($transcript);
+	if(defined $strand && !defined $other_strand) {
+	    #exactly one strand
+
+	    #check frame
+	    @exons = sort by_transcript_id_and_start @exons;
+	    my $first_exon = ($strand eq '+') ? $exons[0] : $exons[@exons-1];
+	    my $exon_ok = $first_exon->{'frame'} == 0;
+
+	    #check info_start, if applicable
+	    if($exon_ok 
+	       && $options->{'check_info'} eq 'true') {
+		if(!exists $first_exon->{"info_start"}
+		   || $first_exon->{"info_start"} != 1) {
+		    $exon_ok = 0;
+		}
+	    }
+
+	    if($exon_ok) {
+		my $seq 
+		    = extract_transcript_sequence(\@exons, $strand, $fasta);
+
+		if(is_start_codon(substr($seq, 0, 3), 
+				  $options->{'start_codons'})) {
+		    $start_codon = restrict_transcript(\@exons, $strand, 0, 3, 0);
+		}
+	    }
+	}
+
+	if(defined $start_codon) {
+	    #change feature of new exons to start_codon, 
+            #source to add_start_codon
+	    foreach my $row (@$start_codon) {
+		$row->{'feature'} = 'start_codon';
+		$row->{'source'} = 'filter_add_start_codon';
+	    }
+	    push @$gtf, @$start_codon;
+	}
+	else {  #no start codon
+	    $no_start++;
+	    foreach my $exon (@$transcript) {
+		$exon->{'status'} = 'bad';
+	    }
+	}
+    }  #for each transcript
+
+    printf STDERR " (%d no start) ", $no_start;
+
+    return $gtf;
+}
+########################################################
+####### filter add_stop_codon #########################
+########################################################
+
+sub init_add_stop_codon
+{
+    my ($options, $data) = @_;
+
+    initialize_option($options, "stop_codons", "TAA TAG TGA"); 
+    initialize_option($options, "check_info", "false", "boolean"); 
+    initialize_option($options, "maximum_stop_site_drift", 1, 
+		      "nonnegative number");
+}
+
+sub exec_add_stop_codon
+{
+    my ($options, $data, $gtf, $fasta) = @_;
+
+    my $no_stop = 0;
+
+    # group rows by transcript_id, mark those without
+    my %id2rows;
+    foreach my $row (@$gtf) {
+	if(!exists $row->{"transcript_id"}) {
+	    $row->{'status'} = 'bad';
+	}
+	else {
+	    push @{$id2rows{$row->{"transcript_id"}}}, $row;
+	}
+    }
+
+    foreach my $transcript (values %id2rows) {
+
+	#skip transcript if stop_codon already present
+	my $was = grep {$_->{'feature'} eq 'stop_codon'} @$transcript;
+	next if $was;  
+
+	#collect all CDS in the transcript
+	my @exons = grep {$_->{'feature'} eq 'CDS'} @$transcript;
+
+	#skip transcripts with empty CDS
+	next if @exons==0;
+
+	my $stop_codon;
+	my $new_exons;   #exons with stop codon removed, if needed
+
+	my ($strand, $other_strand) = valid_strands($transcript);
+	if(defined $strand && !defined $other_strand) {
+	    #exactly one strand
+
+	    #check frame
+	    @exons = sort by_transcript_id_and_start @exons;
+	    my $last_exon = ($strand eq '+') ? $exons[@exons-1] : $exons[0];
+	    my $len = $last_exon->{'end'} - $last_exon->{'start'} + 1;
+	    my $exon_ok = ($len - $last_exon->{'frame'}) %3 == 0;
+
+	    #check info if appropriate
+	    if($exon_ok 
+	       && $options->{'check_info'} eq 'true') {
+		if(!exists $last_exon->{"info_end"}
+		   || !exists $last_exon->{"info_length"}
+		   || abs($last_exon->{"info_end"} - $last_exon->{"info_length"}) 
+		   > $options->{"maximum_stop_site_drift"}) {
+		    $exon_ok = 0;
+		}
+	    }
+
+	    if($exon_ok) { 
+               #check if last three nucleotides are a stop codon
+
+		my $seq 
+		    = extract_transcript_sequence(\@exons, $strand, $fasta);
+
+		if(is_stop_codon(substr($seq, -3), $options->{'stop_codons'})) {
+		    my $len = length($seq);
+		    $stop_codon = restrict_transcript(\@exons, $strand, 
+						      $len-3, 3, 0);
+		    $new_exons = restrict_transcript(\@exons, $strand, 0, 
+						     $len-3, -1);
+		    foreach my $row (@$stop_codon) {
+			$row->{'feature'} = 'stop_codon';
+			$row->{'source'} = 'filter_add_stop_codon';
+		    }		
+		}
+		else {
+		    #perhaps there is stop codon right after the last exon
+
+		    my $codon;
+		    my %tmp_stop_codon = %$last_exon;
+		    if($strand eq '+') {
+			$codon = extract_sequence($last_exon->{'end'}+1,
+						  $last_exon->{'end'}+3,
+						  '+', $fasta);
+			$tmp_stop_codon{'start'}=$last_exon->{'end'}+1;
+		    }
+		    else {
+			$codon = extract_sequence($last_exon->{'start'}-3,
+						  $last_exon->{'start'}-1,
+						  '-', $fasta);
+			$tmp_stop_codon{'start'}=$last_exon->{'start'}-3;
+		    }
+
+		    if(is_stop_codon($codon, $options->{'stop_codons'})) {
+			$tmp_stop_codon{'end'} = $tmp_stop_codon{'start'}+2;
+			$tmp_stop_codon{'frame'} = 0;
+			$tmp_stop_codon{'feature'} = 'stop_codon';
+			$tmp_stop_codon{'source'} = 'filter_add_stop_codon';
+			$stop_codon = [\%tmp_stop_codon];
+		    }
+		} # if stop codon not inside the last CDS
+	    } #if frame ok
+	} #if strand ok
+
+	if(defined $stop_codon) {
+	    push @$gtf, @$stop_codon;
+	    
+	    if(defined $new_exons) {
+		foreach my $row (@exons) {
+		    %$row = ();             #clear all old CDS
+		}
+		push @$gtf, @$new_exons;    #add new exons
+	    }
+	}
+	else {  #no stop codon
+	    $no_stop++;
+	    foreach my $exon (@$transcript) {
+		$exon->{'status'} = 'bad';
+	    }
+	}
+    }  #for each transcript
+
+    printf STDERR " (%d no stop) ", $no_stop;
+
+    @$gtf = grep {keys %$_} @$gtf;  #filter out empty records
+
+    return $gtf;
+}
+
+
+########################################################
+####### filter add_intergenic ##########################
+########################################################
+
+sub init_add_intergenic
+{
+    my ($options, $data) = @_;
+
+    initialize_option($options, "add_intergenic_length", 100, 
+		      "positive number");
+
+    initialize_option($options, "add_intergenic_parent", ''); 
+
+    initialize_option($options, "add_intergenic_direction", 'both'); 
+
+    #check old version of the option to warn users
+    initialize_option($options, "added_intergenic_length", ''); 
+
+    if($options->{'add_intergenic_parent'} eq '') {
+	die "Option add_intergenic_parent is not defined";
+    }
+
+    if($options->{'added_intergenic_length'} ne '') {
+	die "Option added_intergenic_length is deprecated.",
+    }
+    delete $options->{'added_intergenic_length'};
+
+    if($options->{'add_intergenic_direction'} ne 'before'
+       && $options->{'add_intergenic_direction'} ne 'after'
+       && $options->{'add_intergenic_direction'} ne 'both') {
+	die "Option add_intergenic_direction has wrong value ;" 
+	    . $options->{'add_intergenic_direction'} . "'";
+    }
+}
+
+sub exec_add_intergenic
+{
+    my ($options, $data, $gtf, $fasta) = @_;
+
+    my $do_before = $options->{"add_intergenic_direction"} eq "before"
+	|| $options->{"add_intergenic_direction"} eq "both";
+
+    my $do_after = $options->{"add_intergenic_direction"} eq "after"
+	|| $options->{"add_intergenic_direction"} eq "both";
+
+    my $do_both = $options->{"add_intergenic_direction"} eq "both";
+    
+    # for every row
+    foreach my $gtf_line (@$gtf) {
+	# parent feature with strand defined
+	if($gtf_line->{"feature"} eq $options->{"add_intergenic_parent"}) {
+	    # cook up intergenic region
+	    my %intergenic;
+	    $intergenic{"seqname"} = $data->{"seqname"};
+	    $intergenic{"source"} = "filter_add_intergenic";
+	    $intergenic{"feature"} = "intergenic";
+	    $intergenic{"score"} = $gtf_line->{"score"};
+	    $intergenic{"strand"} = $gtf_line->{"strand"};
+	    $intergenic{"frame"} = ".";
+	    
+	    # optional attributes
+	    if(exists $gtf_line->{"transcript_id"}) {
+		$intergenic{"transcript_id"} = $gtf_line->{"transcript_id"};
+	    }
+	    
+	    if(exists $gtf_line->{"info_name"}) {
+		$intergenic{"info_name"} = $gtf_line->{"info_name"};
+	    }
+
+	    my $is_forward = $gtf_line->{"strand"} eq "+";
+	    my $is_reverse = $gtf_line->{"strand"} eq "-";
+		
+	    if($is_forward && $do_before || $is_reverse && $do_after || $do_both) {
+		# intergenic has smaller coordinates than the parent row
+		# (before on forward or after on reverse)
+		$intergenic{"start"} = 
+		    $gtf_line->{"start"} - $options->{"add_intergenic_length"};
+		$intergenic{"end"} = $gtf_line->{"start"} - 1;
+
+		# trim intergenic at sequence ends
+		$intergenic{"start"} = max($intergenic{"start"}, 1);
+		$intergenic{"end"} = min($intergenic{"end"}, length($$fasta));
+		if ($intergenic{"end"} >= $intergenic{"start"}) {
+		    # add the intergenic
+		    my %tmp = %intergenic;
+		    push @$gtf, \%tmp;
+		}
+	    }
+
+	    if($is_forward && $do_after || $is_reverse && $do_before || $do_both) {
+		# intergenic has larger coordinates than the parent row
+		$intergenic{"start"} = $gtf_line->{"end"} + 1;
+		$intergenic{"end"} = 
+		    $gtf_line->{"end"} + $options->{"add_intergenic_length"};
+
+		# trim intergenic at sequence ends
+		$intergenic{"start"} = max($intergenic{"start"}, 1);
+		$intergenic{"end"} = min($intergenic{"end"}, length($$fasta));
+		if ($intergenic{"end"} >= $intergenic{"start"}) {
+		    # add the intergenic
+		    my %tmp = %intergenic;
+		    push @$gtf, \%tmp;
+		}
+	    }
+	}
+    }
+    
+    return $gtf;
+}
+
+########################################################
+####### filter add_gene_id #############################
+########################################################
+
+sub init_add_gene_id
+{
+    my ($options, $data) = @_;
+    # no options to initialize
+
+    # counter for IDs
+    $data->{'gene_num'} = 0;
+    $data->{'no_transcript'} = 0;
+}
+
+sub exec_add_gene_id
+{
+    my ($options, $data, $gtf, $fasta) = @_;
+
+    #gather all CDS rows that have transcript_id, 
+    #initialize group of each transcript_id to itself
+    my @exons_by_end;
+    my %tr2group;
+    foreach my $row (@$gtf) {
+        if(!exists $row->{'transcript_id'}) {
+            $row->{'status'} = 'bad';
+            $data->{'no_transcript'}++;
+        }
+        else {
+	    my $tr = $row->{'transcript_id'};
+	    $tr2group{$tr} = $tr;
+	    if($row->{'feature'} eq 'CDS') {
+		push @exons_by_end, $row;
+	    }
+        }
+    }
+
+    # sort exons by end
+    @exons_by_end = sort {$a->{'end'} <=> $b->{'end'}} @exons_by_end;
+   
+    # sort exons by start in another array
+    my @exons_by_start = sort {$a->{'start'} <=> $b->{'start'}} @exons_by_end;
+
+    # list of exons spanning current position
+    my @active;
+    # current index to @exons_by_start
+    my $next_start = 0;
+
+    foreach my $exon (@exons_by_end) {
+	# add exons to @active that start before $exon ends
+	while($next_start<@exons_by_start 
+	      && $exons_by_start[$next_start]{'start'} <= $exon->{'end'}) {
+	    push @active, $exons_by_start[$next_start];
+	    $next_start++;
+	}
+
+	#Look through active exons 
+        #- they overlap $exon unless they are on opposite strand
+        #Also find the position of $exon in @active to remove it afterwards
+	my $this_exon_idx;
+	for(my $a_exon_idx=0; $a_exon_idx < @active; $a_exon_idx++) {
+	    my $a_exon = $active[$a_exon_idx];  #active exon
+	    die unless $a_exon->{'start'} <= $exon->{'end'}
+	    && $a_exon->{'end'} >= $exon->{'start'};
+	    if($a_exon == $exon) {
+		#found current exon - ignore and delete afterwards
+		die if defined $this_exon_idx;
+		$this_exon_idx = $a_exon_idx;
+	    }
+	    elsif($exon->{'strand'} eq $a_exon->{'strand'} 
+		  || $exon->{'strand'} eq '.' 
+		  || $a_exon->{'strand'} eq '.') {
+		#overlapping intervals - unite them
+		union_sets(\%tr2group, $exon->{'transcript_id'}, 
+		      $a_exon->{'transcript_id'});
+	    }
+	}
+	
+	#remove $exon from @active
+	die unless defined $this_exon_idx;
+	splice @active, $this_exon_idx, 1;
+    }
+
+    my %tr2gene;  # gene id
+    foreach my $tr (keys %tr2group) {
+	my $group = find_set(\%tr2group, $tr);
+	#fill a new gene for the parent group if necessary
+	if(!exists $tr2gene{$group}) {
+	    $data->{'gene_num'}++;
+	    $tr2gene{$group} = $data->{'gene_num'};
+	}
+	# copy gene id from the parent group
+	$tr2gene{$tr} = $tr2gene{$group};
+    }
+    
+    # assign id to each row according to tr2gene
+    foreach my $row (@$gtf) {
+        if(exists $row->{'transcript_id'}) {
+	    my $tr = $row->{'transcript_id'};
+	    die unless exists $tr2gene{$tr};
+            $row->{'gene_id'} = $tr2gene{$tr};
+        }
+    }
+    
+    return $gtf;
+}	
+
+sub find_set {
+    # union find set structure represented by a hash where
+    # everybody points to an ancestor, root of a group
+    # points to itself. Return the root of the group, 
+    # relink all visited nodes directly to root.
+    my ($hash, $key) = @_;
+    die unless exists $hash->{$key};
+    if($hash->{$key} eq $key) { return $key; } 
+    else {
+	my $group = find_set($hash, $hash->{$key});
+	$hash->{$key} = $group;
+	return $group;
+    }
+}
+
+sub union_sets {
+    my ($hash, $key1, $key2) = @_;
+    my $group1 = find_set($hash, $key1);
+    my $group2 = find_set($hash, $key2);
+    die unless $hash->{$group1} eq $group1 
+	&& $hash->{$group2} eq $group2;
+
+    if($group1 ne $group2) {
+	$hash->{$group1} = $group2;
+    }
+}
+
+sub close_add_gene_id
+{
+    my ($options, $data) = @_;
+
+    print STDERR "\nRows without transcript_id: ", 
+    $data->{'no_transcript'}, "\n";
+}
+
+
+########################################################
+####### filter mark_long_gaps ##########################
+########################################################
+
+sub init_mark_long_gaps
+{
+    my ($options, $data) = @_;
+
+    initialize_option($options, "exon_feature", "exon");
+
+    initialize_option($options, "maximum_exon_gap", 30, 
+		      "nonnegative number");
+
+    initialize_option($options, "informant_length_ratio", 1, 
+		      "positive number");
+}
+
+sub exec_mark_long_gaps
+{
+    my ($options, $data, $gtf, $fasta) = @_;
+
+    # for every row
+    foreach my $gtf_line (@$gtf) {
+	# exon with info_start and info_end defined
+	if( ($gtf_line->{"feature"} eq $options->{"exon_feature"}) 
+	    && (exists $gtf_line->{"info_start"}) 
+	    && (exists $gtf_line->{"info_end"}) ) {
+	    my $length1 = $gtf_line->{"end"} - $gtf_line->{"start"} + 1;
+	    my $length2 = ($gtf_line->{"info_end"} - $gtf_line->{"info_start"} + 1) * $options->{"informant_length_ratio"};
+
+	    # if the lengths differ too much, then mark the row as bad
+	    if(abs($length1 - $length2) > $options->{"maximum_exon_gap"}) {
+		# mark as bad
+		$gtf_line->{"status"} = "bad";
+	    }
+	}
+    }
+
+    return $gtf;
+}
+
+
+########################################################
+####### filter find_pseudogenes ##########################
+########################################################
+
+sub init_find_pseudogenes
+{
+    my ($options, $data) = @_;
+
+    initialize_option($options, "stop_codon_threshold", 1, 
+		      "positive number");
+
+    initialize_option($options, "ignore_ends", 0, 
+		      "nonnegative number");
+
+    initialize_option($options, "mark_as_bad", "false", 
+		      "boolean");
+}
+
+sub exec_find_pseudogenes
+{
+    my ($options, $data, $gtf, $fasta) = @_;
+
+    my $num_found = 0;
+
+    # for every row
+    foreach my $gtf_line (@$gtf) {
+	# exon with info_start and info_end defined
+	if($gtf_line->{"feature"} eq 'CDS'
+	   && $gtf_line->{"strand"} =~ /^[+-]$/
+	   && $gtf_line->{"frame"} =~ /^[012]$/) {
+
+	    my $cut = $options->{"ignore_ends"};
+	    my $seq = extract_sequence($gtf_line->{"start"}+$cut,
+				       $gtf_line->{"end"}-$cut,
+				       $gtf_line->{"strand"}, $fasta);
+
+	    #new frame after cutting
+	    my $frame = (($gtf_line->{"frame"} - $cut)%3 + 3)%3;
+
+	    my $num_stop_codons = 0;
+	    for(my $pos=$frame; $pos+2<length($seq); $pos+=3) {
+		my $codon = substr($seq, $pos, 3);
+		if($codon eq 'TAA' || $codon eq 'TAG' || $codon eq 'TGA') {
+		    $num_stop_codons++;
+		}
+	    }
+
+	    # if the number of stop codons is too high, mark the row as pseudogene
+	    if($num_stop_codons >= $options->{"stop_codon_threshold"}) {
+		# mark as pseudogene
+		$gtf_line->{"feature"} = "pseudogene";
+		$gtf_line->{"score"} = $num_stop_codons;
+		$num_found++;
+
+		if ($options->{"mark_as_bad"} eq "true") {
+		    $gtf_line->{"status"} = "bad";
+		}
+	    }
+	}
+    }
+
+    print STDERR " (found $num_found) ";
+
+    return $gtf;
+}
+
+
+
+########################################################
+####### filter remove_bad_rows #########################
+########################################################
+
+sub init_remove_bad_rows
+{
+    my ($options, $data) = @_;
+
+    # this filter has no options
+}
+
+sub exec_remove_bad_rows
+{
+    my ($options, $data, $gtf, $fasta) = @_;
+    my @gtf_new;
+
+    # for every row
+    foreach my $gtf_line (@$gtf) {
+	# row which is NOT bad
+	if( (!exists $gtf_line->{"status"}) 
+	    || (!($gtf_line->{"status"} eq "bad")) ) {
+	    push @gtf_new, $gtf_line;
+	}
+    }
+
+    return \@gtf_new;
+}
+
+########################################################
+####### filter cover_void ##############################
+########################################################
+
+sub init_cover_void
+{
+    my ($options, $data) = @_;
+
+    initialize_option($options, "cover_extend", 0, "nonnegative number");
+}
+
+sub exec_cover_void
+{
+    my ($options, $data, $gtf, $fasta) = @_;
+
+    # sort intervals by start
+    @$gtf = sort { $a->{"start"} <=> $b->{"start"} } @$gtf;	
+
+    my @gtf_intergenic;		             # newly added intergenic regions
+    my $last = -$options->{'cover_extend'};  # last covered letter
+
+    # for every interval
+    foreach my $gtf_line (@$gtf) {
+	if($last + 1 < $gtf_line->{"start"}) {
+	    # if there is a gap between the last covered letter and the start of the current interval
+	    my %intergenic;
+	    $intergenic{"seqname"} = $data->{"seqname"};
+	    $intergenic{"source"} = "filter_cover_void";
+	    $intergenic{"feature"} = "intergenic";
+	    $intergenic{"score"} = ".";
+	    $intergenic{"strand"} = ".";
+	    $intergenic{"frame"} = ".";
+	    $intergenic{"start"} = $last + 1;
+	    $intergenic{"end"} = $gtf_line->{"start"} - 1;
+	    push @gtf_intergenic, \%intergenic;
+	}
+
+	# update the last letter covered 
+	if($last < $gtf_line->{"end"}) {
+	    $last = $gtf_line->{"end"};
+	}
+    }
+
+    # add interval after the end of all intervals
+    if($last < length($$fasta)+$options->{'cover_extend'}) {
+	my %intergenic;
+	$intergenic{"seqname"} = $data->{"seqname"};
+	$intergenic{"source"} = "filter_cover_void";
+	$intergenic{"feature"} = "intergenic";
+	$intergenic{"score"} = ".";
+	$intergenic{"strand"} = ".";
+	$intergenic{"frame"} = ".";
+	$intergenic{"start"} = $last + 1;
+	$intergenic{"end"} = length($$fasta)+$options->{'cover_extend'};
+	push @gtf_intergenic, \%intergenic;
+    }
+
+    # append the new intergenic regions
+    push @$gtf, @gtf_intergenic;
+
+    return $gtf;
+}
+
+########################################################
+####### filter write_schedule ##########################
+########################################################
+
+sub init_write_schedule
+{
+    my ($options, $data) = @_;
+
+    # default names to the name of the about file if no output file specified
+    my $default = change_filename_extension($data->{"about_filename"}, 
+					    ".schedule");
+    initialize_option($options, "schedule_output_file", $default);
+
+    $default = change_filename_extension($data->{"about_filename"}, ".int");
+    initialize_option($options, "int_output_file", $default);
+
+    # check whether options are set
+    initialize_option($options, "schedule_parameter_name", undef);
+    initialize_option($options, "int_filter", undef, "array");
+
+    # default values are empty arrays
+    initialize_option($options, "schedule_unique", [], "array");
+    initialize_option($options, "schedule_compareprior", [], "array");
+
+    initialize_option($options, "schedule_display", '');
+    my @display = split ' ', $options->{"schedule_display"};
+
+    my $schedule_output_base_name = $options->{"schedule_output_file"};
+    $schedule_output_base_name =~ s/.schedule$//;
+
+    # open the schedule file for write
+    local *SCHEDULE_FILE;
+    open(SCHEDULE_FILE, ">", $options->{"schedule_output_file"}) or die "Can not open schedule file '".$options->{"schedule_output_file"}."'.\n";
+
+    # split 'int_filter'
+    my %advisors;
+    foreach my $int_filter (@{$options->{"int_filter"}}) {
+	my ($feature, $strand, $frame, $advisor, $labels) = split(' ', $int_filter, 5);	# feature, strand, frame, advisor, labels
+	$advisors{$advisor} = 1;
+    }
+
+    my %nodes;      #nodes to be written to combiner
+
+    # "interval"
+    foreach my $advisor (keys %advisors) {
+	print SCHEDULE_FILE "component:\n";
+	printf SCHEDULE_FILE " %s-%s interval %s-%s.adv:%s\n", $schedule_output_base_name, $advisor, $options->{"schedule_parameter_name"}, $advisor, $options->{"int_output_file"};
+	print SCHEDULE_FILE ":end\n";
+	print SCHEDULE_FILE "\n";
+
+	# add node to the hash
+	my $component_name = sprintf "%s-%s", $schedule_output_base_name, $advisor;
+	$nodes{$component_name} = 1;
+    }
+
+    # "unique" components
+    foreach my $line (@{$options->{"schedule_unique"}}) {
+	my ($parameter, $advisor1, @other_advisors) = split(' ', $line);
+	die "At least two advisors required in write_schedule unique line '$line'" unless @other_advisors;
+
+	print SCHEDULE_FILE "component:\n";
+	printf SCHEDULE_FILE " %s-%s-u unique %s %s-%s", $schedule_output_base_name, $advisor1, 
+	$parameter, $schedule_output_base_name, $advisor1;
+	foreach my $advisor (@other_advisors) {
+	    printf SCHEDULE_FILE " %s-%s", , $schedule_output_base_name, $advisor;
+	}
+	print SCHEDULE_FILE "\n:end\n\n";
+
+	# add node to the hash
+	my $component_name = sprintf "%s-%s-u", $schedule_output_base_name, $advisor1;
+	$nodes{$component_name} = 1;
+
+	# "remove" node from the hash
+	my $in_component_name = sprintf "%s-%s", $schedule_output_base_name, $advisor1;
+	$nodes{$in_component_name} = 0;
+    }
+
+    # "compareprior"
+    foreach my $line (@{$options->{"schedule_compareprior"}}) {
+	my ($parameter, $advisor) = split(' ', $line, 2);
+
+	print SCHEDULE_FILE "component:\n";
+	printf SCHEDULE_FILE " %s-%s-c compareprior %s %s-%s\n", $schedule_output_base_name, $advisor, 
+	$parameter, $schedule_output_base_name, $advisor;
+	print SCHEDULE_FILE ":end\n";
+	print SCHEDULE_FILE "\n";
+
+	# add node to the hash
+	my $component_name = sprintf "%s-%s-c", $schedule_output_base_name, $advisor;
+	$nodes{$component_name} = 1;
+
+	# "remove" node from the hash
+	my $in_component_name = sprintf "%s-%s", $schedule_output_base_name, $advisor;
+	$nodes{$in_component_name} = 0;
+    }
+    
+    # writer components
+    foreach my $display (@display) {
+	print SCHEDULE_FILE "component:\n";
+	my $in = $schedule_output_base_name . "-" . $display;
+	printf SCHEDULE_FILE "%s-display writer %s.display %s\n", 
+	      $in, $in, $in;
+	print SCHEDULE_FILE ":end\n\n";
+    }
+
+
+    # print output nodes
+    foreach my $v (keys %nodes) {
+	if($nodes{$v}) {
+	    printf SCHEDULE_FILE "# TO COMBINE %s\n", $v;
+	}
+    }
+}
+
+sub exec_write_schedule
+{
+	my ($options, $data, $gtf, $fasta) = @_;
+	# do nothing, just return the original set of rows
+	return $gtf;
+}
+
+########################################################
+####### filter clear_status ##########################
+########################################################
+
+sub init_clear_status
+{
+    my ($options, $data) = @_;
+}
+
+sub exec_clear_status
+{
+    my ($options, $data, $gtf, $fasta) = @_;
+    foreach my $row (@$gtf) {
+	delete $row->{'status'};
+    }
+    return $gtf;
+}
+
+
+########################################################
+####### filter compute_coverage ########################
+########################################################
+
+sub init_compute_coverage
+{
+    my ($options, $data) = @_;
+}
+
+sub exec_compute_coverage
+{
+    my ($options, $data, $gtf, $fasta) = @_;
+
+    my %by_feature;   #for each feature a list of rows
+    foreach my $row (@$gtf) {
+	push @{$by_feature{$row->{'feature'}}}, $row;
+	push @{$by_feature{"_ALL_"}}, $row;
+    }
+
+    foreach my $feature (keys %by_feature) {
+	#sort by start 
+	my @list = sort {$a->{'start'} <=> $b->{'start'}} 
+	@{$by_feature{$feature}};
+
+	my $length_sum = 0;
+	my $length_union = 0;
+	my $num = @list;
+	my $start = $list[0]{'start'};
+	my $end = $list[0]{'end'};
+	foreach my $row (@list) {
+	    $length_sum += $row->{'end'} - $row->{'start'} + 1;
+	    if($row->{'start'}<=$end) {
+		#extend interval
+		if($row->{'end'}>$end) {
+		    $end = $row->{'end'}
+		}
+	    }
+	    else {
+		#start a new interval
+		$length_union += $end-$start+1;
+		$start = $row->{'start'};
+		$end = $row->{'end'};
+	    }
+	}
+	$length_union += $end-$start+1;
+
+	#now add stats for this feature to $data
+	$data->{'stats'}{$feature}{'length_sum'}+=$length_sum;
+	$data->{'stats'}{$feature}{'length_union'}+=$length_union;
+	$data->{'stats'}{$feature}{'interval_num'}+=$num;
+    }
+    $data->{'stats'}{'_ALL_'}{'length_seq'}+=length($$fasta);
+    return $gtf;
+}
+
+sub close_compute_coverage
+{
+    my ($options, $data) = @_;
+
+    print STDERR "\n";
+    foreach my $feature (sort keys %{$data->{'stats'}}) {
+	foreach my $category (sort keys %{$data->{'stats'}{$feature}}) {
+	    my $print_cat = $category;
+	    $print_cat =~ s/_/ /g;
+	    
+	    printf STDERR "STATS %15s %15s %10d\n", $feature, $category,
+	    $data->{'stats'}{$feature}{$category};
+	}
+    }
+}
+
+#####################################################################
+###################### helper sub-routines ##########################
+#####################################################################
+
+sub reverse_complement
+{
+    my ($string) = @_;
+    $string = reverse uc $string;
+    $string =~ tr/ACGT/TGCA/;
+    return $string;
+}
+
+sub extract_sequence 
+{
+    my ($from, $to, $strand, $fasta) = @_;
+    #from, to are in GTF coordinates (starting from one), 
+    #$fasta is reference to string
+
+    if($from > $to) { return ''; }
+
+    $from--;   #gtf coordinates start from one
+    $to--;
+    my $len = $to-$from+1;
+
+    # if starts beyond left end of sequence, pad with N's
+    my $result = '';
+    if($from < 0) {
+	if($to < 0) {
+	    $result = 'N' x ($to-$from+1);
+	}
+	else {
+	    $result = 'N' x (-$from);
+	}
+	$from = 0;
+    }
+
+    # extract sequence from fasta
+    if($from < length($$fasta)) {
+	$result .= substr($$fasta, $from, $to-$from+1);
+    }
+
+    # if ends beyond right end of sequence, pad with N's
+    if(length($result) < $len) {
+	$result .= 'N' x ($len-length($result));
+    }
+	
+    # reverse if necessary
+    if($strand eq '-') {
+	$result = reverse_complement($result);
+    }
+    return uc $result;
+}
+
+
+sub is_stop_codon
+{
+    my ($codon, $stop_codons) = @_;
+
+    die unless defined $stop_codons;
+    my @codons = split ' ', $stop_codons;
+    die unless @codons;
+
+    my $ok = 0;
+    foreach my $stop_codon (@codons) {
+	$ok = $ok || ($codon eq $stop_codon);
+    }
+    return $ok;
+}
+
+sub is_start_codon
+{
+    my ($codon, $start_codons) = @_;
+
+    is_stop_codon($codon, $start_codons);
+}
+
+
+# remove spaces from the beginning and the end of the string
+sub trim
+{
+    my ($string) = @_;
+    $string =~ s/^\s+//;
+    $string =~ s/\s+$//;
+    return $string;
+}
+
+sub normalize_fasta_name
+{
+    my $name = shift;
+    
+    $name =~ s/\s+$//;		# remove trailing white space
+    $name =~ s/^\s*>\s*//;		# remove > at the beginning of line
+    $name =~ s/^(\S+)\s.*$/$1/;	# remove everything after first space
+    
+    #if it has gi, take only number
+    if ( $name =~ /gi\|(.*)\|/ ) { 
+	$name = $1;
+    }
+
+    return $name;
+}
+
+sub parse_fasta_name
+{
+    my ($line) = @_;
+        
+    if($line =~ /^\s*(>.*\S)\s*$/) { return $1; }
+    else {
+	return undef;
+    }
+}
+
+# read one fasta sequence from the fasta file
+sub read_fasta
+{
+    my ($input) = @_;
+    
+    # read name of fasta sequence
+    my $name;
+    while(1) {
+	my $line = <$input>;
+	
+	# end of file
+	return unless defined $line;
+
+	# skip empty lines
+	next if $line =~ /^\s*$/;
+
+	# parse the name
+	$name = parse_fasta_name($line);
+	if(!defined $name) {
+	    die "Incorrect fasta file.";
+	}
+	else {
+	    last;
+	}
+    }
+
+    # read fasta sequence
+    my $sequence = "";
+    while(1) {
+	my $file_pos = tell($input);
+	my $line = <$input>;
+	
+	# end of file
+	if(!defined $line) { last; }
+
+	# if there is a beginning of a new sequence
+	if(defined parse_fasta_name($line)) {
+	    seek($input, $file_pos, 0);
+	    last;
+	}
+
+	# remove all whitespaces from line and append it to the sequence
+	$line =~ s/\s//g;
+	$sequence .= $line;
+    }
+    
+    return ($name, \$sequence);
+}
+
+sub change_filename_extension
+{
+    my ($filename, $new_extension) = @_;
+    my $orig_filename = $filename;
+    $filename =~ s/\.[^.]*$/$new_extension/;
+    if($orig_filename eq $filename) {
+	#if the orig. extension was the same or none existed, 
+        # append extension at the end
+	$filename .= $new_extension;
+    }
+    return $filename;
+}
+
+sub matches
+{
+    my ($value, $regex) = @_;
+    
+    if($regex eq "*") { return 1; }
+    
+    return ($value eq $regex);
+}
+
+# If an option with a given name does not exist,
+# give it a given default value. 
+# If default value is undefined and the result stays undefined, die.
+# Optionally check whether it is "number",
+# "positive number" or "nonnegative number"
+sub initialize_option
+{
+    my ($options, $name, $default_value, $check) = @_;
+
+    # initialize with default value, if no other value set
+    $options->{$name} = $default_value unless exists $options->{$name};
+    
+    if(!defined $options->{$name}) {
+	die "Option $name is undefined. Aborting.\n";
+    }
+
+    return unless defined $check;
+
+    if($check eq "number") {
+	die "Option $name must be a number.\n"
+	    unless looks_like_number $options->{$name};
+    }
+    elsif($check eq "positive number") {
+	die "Option $name must be a positive number.\n"
+	    unless looks_like_number $options->{$name}
+	&& $options->{$name} > 0;
+    }
+    elsif($check eq "nonnegative number") {
+	die "Option $name must be a nonnegative number.\n"
+	    unless looks_like_number $options->{$name}
+	&& $options->{$name} >= 0;
+    }
+    elsif($check eq "boolean") {
+	die "Option $name must be true or false.\n"
+	    unless $options->{$name} eq 'true' || $options->{$name} eq 'false';
+    }
+    elsif($check eq "array") {
+	die "Option $name must be an array.\n"
+	    unless ref($options->{$name}) eq "ARRAY";
+    }
+    else {
+	die "Internal error: wrong test '$check' for option '$name'";
+    }
+}
+sub min
+{
+    my ($a, $b) = @_;
+    if(!defined($a)) { return $b; }
+    if(!defined($b)) { return $a; }
+    if($a<$b) { return $a; }
+    return $b;
+}
+
+sub max
+{
+    my ($a, $b) = @_;
+    if(!defined($a)) { return $b; }
+    if(!defined($b)) { return $a; }
+    if($a>$b) { return $a; }
+    return $b;
+}
+
+
+# Returns length of the intersection of two intervals [a,b] and [c,d]
+# (If they do not intersect, then the length is zero or negative)
+sub interval_overlap
+{
+    my ($a, $b, $c, $d) = @_;
+    
+    die unless ($a<=$b);
+    die unless ($c<=$d);
+    
+    # l = max(a,c) -- left end point of the intersection
+    my $l = max($a, $c);
+
+    # r = min(b,d) -- right end point of the intersection
+    my $r = min($b, $d);
+
+    return $r-$l+1;
+}
+
+# Does intervals [a,b] and [c,d] intersect?
+# (we assume a<=b and c<=d)
+sub interval_intersect
+{
+    if(interval_overlap(@_) <=0) {
+	return 0;
+    }
+    else {
+	return 1;
+    }
+}
+
+# Distance between two intervals [a,b] and [c,d]
+sub interval_distance
+{
+    return -interval_overlap(@_);
+}
+
+# given intervals [a,b] [c,d]
+# returns the interval [b+1, c-1] if [a,b] < [c,d]
+# or returns [d+1, a-1] if [c,d] > [a,b] 
+sub interval_gap
+{
+    my ($a, $b, $c, $d) = @_;
+
+    die unless ($a<=$b);
+    die unless ($c<=$d);
+
+    # l = max(a,c) -- left end point of the intersection
+    my $l = max($a, $c);
+
+    # r = min(b,d) -- right end point of the intersection
+    my $r = min($b, $d);
+
+    return ($r+1, $l-1);
+}
+
