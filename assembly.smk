@@ -263,3 +263,50 @@ rule manual_assembly:
        """
        {SCRIPT_PATH}/manual_assembly.pl -j {output.joins} {input.fa} {input.regions} > {output.fa}
        """
+
+rule self_aln:
+    input:
+        fa="{name}.fa"
+    output:
+        psl="{name}-self.psl", tab="{name}-self.tab"
+    shell:
+        """
+        lastdb {output.psl}-tmp {input}
+        lastal {output.psl}-tmp {input} -E1e-10 > {output.psl}.maf
+        maf-convert psl {output.psl}.maf > {output.psl}.tmp
+        perl -lane 'print unless $F[13] eq $F[9] && $F[0] >= 0.99*$F[10] && $F[0] >= 0.99*$F[14]' {output.psl}.tmp > {output.psl}
+        maf-convert tab {output.psl}.maf > {output.tab}
+        rm {output.psl}.maf {output.psl}.tmp
+        rm {output.psl}-tmp.*
+        """
+
+rule chain:
+    input:
+        "{name}.psl"
+    output:
+        "{name}.chain"
+    shell:
+        """
+	pslToChain {input} {output}
+	"""
+
+rule psl_png:
+    input:
+        "{name}.psl.tab"
+    output:
+        "{name}.psl.tab.png"
+    shell:
+        """
+	last-dotplot {input} {output}
+	"""
+
+# e.g. _l100_id90 requires length 100 and id 90%, similarly 300_70
+rule psl_filter:
+    input:
+        "{name}.psl"
+    output:
+        "{name}_l{length}_id{id}.psl"
+    shell:
+        """
+	perl -lane 'die unless @F==21; next if $F[12]-$F[11]<{wildcards.length} || $F[16]-$F[15]<{wildcards.length} || ($F[0]+$F[2])<({wildcards.id}/100)*($F[0]+$F[1]+$F[2]+$F[3]+$F[5]+$F[7]); print' {input} > {output}
+        """

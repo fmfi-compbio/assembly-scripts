@@ -228,7 +228,6 @@ rule au_gtf:
         genePredToGtf -honorCdsStat file {input} {output}
         """
 
-
 rule gtf2prot:
     input:
         gtf="{name}.gtf", fa="genome.fa"
@@ -237,4 +236,15 @@ rule gtf2prot:
     shell:
         """
         {SCRIPT_PATH}/gtf2transcript.pl -c -s -S -g {GENETIC_CODE} {input.fa} {input.gtf} -10 0 {output.cdna} {output.prot}
+        """
+
+# gtf should be sorted in the same order as genome.fa
+rule exons2CDS:
+    input:
+        "{name}-exons.gtf"
+    output:
+        "{name}-CDS.gtf"
+    shell:
+        """
+        /opt/assembly-scripts/filter-gtf -p "INPUT {input} OUTPUT {output}" /opt/assembly-scripts/about/add_cds.about genome.fa
         """
