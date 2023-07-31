@@ -50,6 +50,7 @@ open $in, "<", $fasta_list or die;
 while(my $line = <$in>) {
     $line =~ s/\s+$//;
     $line =~ s/^\s+//;
+    next if $line eq "";
     die "missing fasta $line" unless -r $line;
     push @fasta, $line;
 }

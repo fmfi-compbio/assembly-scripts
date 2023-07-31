@@ -133,6 +133,16 @@ rule blastn:
 	rm {output}.tmp2
         """
 
+# output bed file for the first of the sequences to be compared by blast
+rule blast2bed:
+    input:
+        "{name}.blast"
+    output:
+        "{name}.bed"
+    shell:
+        """
+        perl -lane '$name="$F[2]:$F[4]-$F[5]:$F[10]"; print join("\t", @F[6,8,9], $name, @F[0,1])' {input} | sort -k1,1 -k2g > {output}
+	"""
 
 # create a pdf dotplot from a paf file
 rule minimap_pdf:

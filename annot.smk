@@ -1,9 +1,12 @@
 # HiSeq, MiSeq, palindrome mode for shorter inserts
 TRIMMOMATIC_OPT = "ILLUMINACLIP:/usr/local/share/trimmomatic/adapters/TruSeq3-PE.fa:2:30:10"
 TRINITY_OPT = "--max_memory 40G --CPU 8"
+TRINITY_OPT_PAIRS = ""  # default non-stranded; see https://rnabio.org/module-09-appendix/0009/12/01/StrandSettings/
 BLAT_MAX_INTRON = "5000"
 CDNAFILTER_OPT = "-minId=0.95 -minCover=0.75 -globalNearBest=0"
 STAR_OPT = "--runThreadN 4"
+STAR_OPT2 = "--outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 0 --outFilterMismatchNmax 2"
+STAR_MIN_MATCH = 30
 SCRIPT_PATH = "/opt/assembly-scripts"
 RFAM_OPT = "--cpu 6"
 AUGUSTUS_DIR = "/usr/local/share/augustus-3.2.3/augustus-3.2.3"
@@ -39,7 +42,7 @@ rule trinity_paired:
     shell:
          """
         Trinity --version > {params.log}
-        Trinity {TRINITY_OPT} --seqType fq --left {input.fq1} --right {input.fq2} --full_cleanup --output {params.tmp}
+        Trinity {TRINITY_OPT} {TRINITY_OPT_PAIRS} --seqType fq --left {input.fq1} --right {input.fq2} --full_cleanup --output {params.tmp}
         mv {params.tmp}.Trinity.fasta {output.fa}
         mv {params.tmp}.Trinity.fasta.gene_trans_map {output.map}
         """
@@ -96,12 +99,13 @@ rule bam_star:
         """
         mkdir {params.index}
         STAR {STAR_OPT} --runMode genomeGenerate --genomeDir {params.index} --genomeFastaFiles {input.genome}  --genomeSAindexNbases 11
-    	STAR {STAR_OPT} --genomeDir {params.index} --alignIntronMax {BLAT_MAX_INTRON} --readFilesIn {input.fq1} {input.fq2} --outFileNamePrefix {params.prefix} e --readFilesCommand zcat
-    	STAR {STAR_OPT} --genomeDir {params.index} --alignIntronMax {BLAT_MAX_INTRON} --readFilesIn {input.fqu} --outFileNamePrefix {params.prefix}u- e --readFilesCommand zcat
+    	STAR {STAR_OPT} {STAR_OPT2} --genomeDir {params.index} --alignIntronMax {BLAT_MAX_INTRON} --readFilesIn {input.fq1} {input.fq2} --outFileNamePrefix {params.prefix} e --readFilesCommand zcat
+    	STAR {STAR_OPT} {STAR_OPT2} --genomeDir {params.index} --alignIntronMax {BLAT_MAX_INTRON} --readFilesIn {input.fqu} --outFileNamePrefix {params.prefix}u- e --readFilesCommand zcat
     	rm -r {params.index}
     	rm {params.prefix}Log.progress.out {params.prefix}u-Log.progress.out
-    	samtools view -b {params.prefix}Aligned.out.sam | samtools sort > {params.prefix}1.bam
-    	samtools view -b {params.prefix}u-Aligned.out.sam | samtools sort > {params.prefix}2.bam
+        # -F 260 uses only primary alignments
+    	samtools view -b -F 260 -m {STAR_MIN_MATCH} {params.prefix}Aligned.out.sam | samtools sort > {params.prefix}1.bam
+    	samtools view -b -F 260 -m {STAR_MIN_MATCH} {params.prefix}u-Aligned.out.sam | samtools sort > {params.prefix}2.bam
     	rm {params.prefix}Aligned.out.sam {params.prefix}u-Aligned.out.sam
     	samtools merge {output.bam} {params.prefix}1.bam {params.prefix}2.bam
     	rm {params.prefix}1.bam {params.prefix}2.bam
