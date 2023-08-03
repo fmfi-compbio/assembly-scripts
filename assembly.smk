@@ -252,6 +252,20 @@ rule nanopore_sample:
        zcat {input} | perl -ne 'BEGIN {{ srand({SAMPLE_SEED}); }} $s.=$_; if($.%4==0) {{ if(length($_)>{wildcards.minsize}*1000 && rand(1)<{wildcards.frac}) {{ print $s; }} $s=""; }}' | gzip -c > {output}
        """
 
+rule illumina_sample:
+    input:
+         fq1="{name}-I_1.fastq.gz", fq2="{name}-I_2.fastq.gz"
+    output:
+         fq1="{name}-sample-{frac}-I_1.fastq.gz", fq2="{name}-sample-{frac}-I_2.fastq.gz"
+    params:
+        list="{name}-sample-{frac}-I.list"
+    shell:
+        """
+        zcat {input.fq1} | perl -lane 'BEGIN {{ srand({SAMPLE_SEED}); }} if($.%4==1 && rand(1)<{wildcards.frac}) {{ print; }}' > {params.list}
+        zcat {input.fq1} | grep -F -f {params.list} -A 3 - | grep -v '^--$' | gzip -c > {output.fq1}
+        zcat {input.fq2} | grep -F -f {params.list} -A 3 - | grep -v '^--$' | gzip -c > {output.fq2}
+        """
+        
 # convert reads to fasta
 rule fastq_gz_to_fasta:
     input:

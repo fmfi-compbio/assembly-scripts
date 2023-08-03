@@ -1,0 +1,2 @@
+#! /usr/bin/bash
+snakemake -s /opt/assembly-scripts/assembly.smk "$@"
