@@ -2,7 +2,7 @@
 TRIMMOMATIC_OPT = "ILLUMINACLIP:/usr/local/share/trimmomatic/adapters/TruSeq3-PE.fa:2:30:10"
 TRINITY_OPT = "--max_memory 40G --CPU 8"
 TRINITY_OPT_PAIRS = ""  # default non-stranded; see https://rnabio.org/module-09-appendix/0009/12/01/StrandSettings/
-BLAT_MAX_INTRON = "5000"
+MAX_INTRON = "5000"
 CDNAFILTER_OPT = "-minId=0.95 -minCover=0.75 -globalNearBest=0"
 STAR_OPT = "--runThreadN 4"
 STAR_OPT2 = "--outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 0 --outFilterMismatchNmax 2"
@@ -10,7 +10,9 @@ STAR_MIN_MATCH = 30
 SCRIPT_PATH = "/opt/assembly-scripts"
 RFAM_OPT = "--cpu 6"
 AUGUSTUS_DIR = "/usr/local/share/augustus-3.2.3/augustus-3.2.3"
+AUGUSTUS_OPT = "--alternatives-from-evidence=false --alternatives-from-sampling=false"
 GENETIC_CODE = 1
+MINIPROT_OPT = "-t4 -j1"  # j1 is non-mammalian splice sites
 
 rule rna_trim:
     input:
@@ -82,7 +84,7 @@ rule transcripts_blat:
        tmp_psl="{rnaseq}_tr.tmp_psl"
     shell:
         """
-        blat -maxIntron={BLAT_MAX_INTRON} {input.genome} {input.tr} {params.tmp_psl}
+        blat -maxIntron={MAX_INTRON} {input.genome} {input.tr} {params.tmp_psl}
         pslCDnaFilter {CDNAFILTER_OPT} {params.tmp_psl} {output.psl} 2> {output.log}
         rm {params.tmp_psl}
         """
@@ -99,8 +101,8 @@ rule bam_star:
         """
         mkdir {params.index}
         STAR {STAR_OPT} --runMode genomeGenerate --genomeDir {params.index} --genomeFastaFiles {input.genome}  --genomeSAindexNbases 11
-    	STAR {STAR_OPT} {STAR_OPT2} --genomeDir {params.index} --alignIntronMax {BLAT_MAX_INTRON} --readFilesIn {input.fq1} {input.fq2} --outFileNamePrefix {params.prefix} e --readFilesCommand zcat
-    	STAR {STAR_OPT} {STAR_OPT2} --genomeDir {params.index} --alignIntronMax {BLAT_MAX_INTRON} --readFilesIn {input.fqu} --outFileNamePrefix {params.prefix}u- e --readFilesCommand zcat
+    	STAR {STAR_OPT} {STAR_OPT2} --genomeDir {params.index} --alignIntronMax {MAX_INTRON} --readFilesIn {input.fq1} {input.fq2} --outFileNamePrefix {params.prefix} e --readFilesCommand zcat
+    	STAR {STAR_OPT} {STAR_OPT2} --genomeDir {params.index} --alignIntronMax {MAX_INTRON} --readFilesIn {input.fqu} --outFileNamePrefix {params.prefix}u- e --readFilesCommand zcat
     	rm -r {params.index}
     	rm {params.prefix}Log.progress.out {params.prefix}u-Log.progress.out
         # -F 260 uses only primary alignments
@@ -207,7 +209,7 @@ rule au_tr:
         export SP=`head -n 1 {input.cfg}`
         export DIR=`head -n 2 {input.cfg} | tail -n 1`
         echo "SP:$SP  DIR:$DIR"
-        augustus --uniqueGeneId=true --AUGUSTUS_CONFIG_PATH=$DIR --species=$SP --hintsfile={input.hints} --extrinsicCfgFile={AUGUSTUS_DIR}/config/extrinsic/extrinsic.ME.cfg {input.fa} > {output}
+        augustus {AUGUSTUS_OPT} --uniqueGeneId=true --AUGUSTUS_CONFIG_PATH=$DIR --species=$SP --hintsfile={input.hints} --extrinsicCfgFile={AUGUSTUS_DIR}/config/extrinsic/extrinsic.ME.cfg {input.fa} > {output}
         """
 
 rule au_gp:
@@ -251,4 +253,16 @@ rule exons2CDS:
     shell:
         """
         /opt/assembly-scripts/filter-gtf -p "INPUT {input} OUTPUT {output}" /opt/assembly-scripts/about/add_cds.about genome.fa
+        """
+
+# align proteins by miniprot
+# gtf should be sorted in the same order as genome.fa
+rule miniprot:
+    input:
+        fa="genome.fa", faa="{name}-prot.fa"
+    output:
+        gtf="{name}-prot.gtf"
+    shell:
+        """
+	miniprot -G{MAX_INTRON} {MINIPROT_OPT} --gtf {input.fa} {input.faa} > {output}
         """

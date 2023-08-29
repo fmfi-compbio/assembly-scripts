@@ -25,15 +25,43 @@ rule flye:
 # run alignments of illumina reads to an assembly
 rule bwa:
     input:
-        fa="{strain}-{assembly}.fa", il1="{strain}-I_1.fastq.gz", il2="{strain}-I_2.fastq.gz"
+        fa="{assembly}.fa", il1="{reads}-I_1.fastq.gz", il2="{reads}-I_2.fastq.gz"
     output:
-        bam="{strain}-{assembly}-I.bam", bai="{strain}-{assembly}-I.bam.bai",
+        bam="{assembly}-MAP-{reads}-I.bam", bai="{assembly}-MAP-{reads}-I.bam.bai",
     shell:
         """
-      bwa index {input.fa} -p {output.bam}.tmp
-      bwa mem {BWA_OPT} {output.bam}.tmp {input.il1} {input.il2} | samtools view -b - |  samtools sort - -o {output.bam}
-      rm -f {output.bam}.tmp.amb {output.bam}.tmp.ann {output.bam}.tmp.bwt {output.bam}.tmp.pac {output.bam}.tmp.sa
-      samtools index {output.bam}
+        bwa index {input.fa} -p {output.bam}.tmp
+        bwa mem {BWA_OPT} {output.bam}.tmp {input.il1} {input.il2} | samtools view -b - |  samtools sort - -o {output.bam}
+        rm -f {output.bam}.tmp.amb {output.bam}.tmp.ann {output.bam}.tmp.bwt {output.bam}.tmp.pac {output.bam}.tmp.sa
+        samtools index {output.bam}
+        """
+
+# run alignments of illumina reads to an assembly for reads called illumina_[12].fastq.gz
+rule bwa2:
+    input:
+        fa="{assembly}.fa", il1="illumina_1.fastq.gz", il2="illumina_2.fastq.gz"
+    output:
+        bam="{assembly}-I.bam", bai="{assembly}-I.bam.bai",
+    shell:
+        """
+       bwa index {input.fa} -p {output.bam}.tmp
+       bwa mem {BWA_OPT} {output.bam}.tmp {input.il1} {input.il2} | samtools view -b - |  samtools sort - -o {output.bam}
+       rm -f {output.bam}.tmp.amb {output.bam}.tmp.ann {output.bam}.tmp.bwt {output.bam}.tmp.pac {output.bam}.tmp.sa
+       samtools index {output.bam}
+       """
+
+# run alignments of illumina reads to an assembly for reads called illumina-sample_[12].fastq.gz
+rule bwa_sample:
+    input:
+        fa="{assembly}.fa", il1="illumina-sample_1.fastq.gz", il2="illumina-sample_2.fastq.gz"
+    output:
+        bam="{assembly}-IS.bam", bai="{assembly}-IS.bam.bai",
+    shell:
+        """
+       bwa index {input.fa} -p {output.bam}.tmp
+       bwa mem {BWA_OPT} {output.bam}.tmp {input.il1} {input.il2} | samtools view -b - |  samtools sort - -o {output.bam}
+       rm -f {output.bam}.tmp.amb {output.bam}.tmp.ann {output.bam}.tmp.bwt {output.bam}.tmp.pac {output.bam}.tmp.sa
+       samtools index {output.bam}
        """
 
 # pilon polishing with illumina bam file
@@ -47,6 +75,16 @@ rule pilon:
         java -Xmx20G -jar /opt/broad/pilon-1.21.jar --genome {input.fa} --outdir {output.dir} --changes --tracks --frags {input.bam} > {output.fa}.log
         perl -lne 's/^(>.*)_pilon\s*$/$1/; print'  {output.dir}/pilon.fasta > {output.fa}
         """
+
+rule pilon_unconfirmed:
+     input:
+        fa="{assembly}.fa", dir=directory("{assembly}-pilon"), sizes="{assembly}.sizes"
+     output:
+        "{assembly}-unconfirmed.bw"
+     shell:
+         """
+         wigToBigWig {input.dir}/pilonUnconfirmed.wig {input.sizes} {output}
+         """
 
 # quast for any assembly
 rule quast:
@@ -82,19 +120,7 @@ rule sizes:
 	faSize -detailed {input} > {output}
         """
 
-# compare two assemblies
-rule asm_minimap:
-    input:
-        fa1="{asm1}.fa", fa2="{asm2}.fa"
-    output:
-        "{asm1}-{asm2}.paf"
-    shell:
-        """
-        minimap2 -x asm20 -c {input.fa1} {input.fa2} > {output}
-        """
-
-# sometimes snakemake does not correctly split the filename
-# into two parts - help via special rule with ALN in the middle
+# compare two assemblies via minimap, noe ALN in the middle
 rule asm_minimap2:
     input:
         fa1="{asm1}.fa", fa2="{asm2}.fa"
@@ -133,12 +159,12 @@ rule blastn:
 	rm {output}.tmp2
         """
 
-# output bed file for the first of the sequences to be compared by blast
+# output bed file for the first of the sequences compared by blast
 rule blast2bed:
     input:
         "{name}.blast"
     output:
-        "{name}.bed"
+        "{name}.blast.bed"
     shell:
         """
         perl -lane '$name="$F[2]:$F[4]-$F[5]:$F[10]"; print join("\t", @F[6,8,9], $name, @F[0,1])' {input} | sort -k1,1 -k2g > {output}
@@ -182,8 +208,31 @@ rule Nanopore_minimap_bam:
     input:
          fa="{genome}.fa", fastq="{reads}-N.fastq.gz"
     output:
-         bam="{genome}-{reads}-N.bam", bai="{genome}-{reads}-N.bam.bai"
-        
+         bam="{genome}-MAP-{reads}-N.bam", bai="{genome}-MAP-{reads}-N.bam.bai"
+    shell:
+        """
+        minimap2 -a -x map-ont --secondary=no {MINIMAP_OPT} {input.fa} {input.fastq} | samtools view -S -b - | samtools sort - -o {output.bam}
+    	samtools index {output.bam}
+        """
+
+# nanopore aligned by minimap for reads called nanopore.fastq.gz
+rule Nanopore_minimap_bam2:
+    input:
+         fa="{genome}.fa", fastq="nanopore.fastq.gz"
+    output:
+         bam="{genome}-N.bam", bai="{genome}-N.bam.bai"
+    shell:
+        """
+        minimap2 -a -x map-ont --secondary=no {MINIMAP_OPT} {input.fa} {input.fastq} | samtools view -S -b - | samtools sort - -o {output.bam}
+    	samtools index {output.bam}
+        """
+
+# nanopore aligned by minimap for reads called nanopore-sample.fastq.gz
+rule Nanopore_minimap_bam_sample:
+    input:
+         fa="{genome}.fa", fastq="nanopore-sample.fastq.gz"
+    output:
+         bam="{genome}-NS.bam", bai="{genome}-NS.bam.bai"
     shell:
         """
         minimap2 -a -x map-ont --secondary=no {MINIMAP_OPT} {input.fa} {input.fastq} | samtools view -S -b - | samtools sort - -o {output.bam}
@@ -191,23 +240,55 @@ rule Nanopore_minimap_bam:
         """
 
 # create coverage from bam file (for illumina / rnaseq coverage)
-rule Nanopore_bedgraph:
+rule bam_to_bedgraph:
     input:
          bam="{aln}.bam"
     output:
          cov="{aln}.bedgraph"
     shell:
         """
-        bedgraph genomecov -ibam {input.bam} -bga -split {output.cov}
-        """    
+        bedtools genomecov -ibam {input.bam} -bga -split > {output.cov}
+        """
+
+rule bedgraph_to_bw:
+    input:
+         bedgraph="{genome}-{aln}.bedgraph", sizes="{genome}.sizes"
+    output:
+         "{genome}-{aln}.bw"
+    shell:
+        """
+        bedGraphToBigWig {input.bedgraph} {input.sizes} {output}
+        """
+
 
 # nanopore aligned by minimap with paf format
 rule Nanopore_minimap_paf:
     input:
          fa="{genome}.fa", fastq="{reads}-N.fastq.gz"
     output:
-         paf="{genome}-{reads}-N.paf"
-        
+         paf="{genome}-MAP-{reads}-N.paf"
+    shell:
+        """
+        minimap2 -c -x map-ont --secondary=no {MINIMAP_OPT} {input.fa} {input.fastq} > {output.paf}
+        """
+
+# nanopore aligned by minimap with paf format for reads called nanopore.fastq.gz
+rule Nanopore_minimap_paf2:
+    input:
+         fa="{genome}.fa", fastq="nanopore.fastq.gz"
+    output:
+         paf="{genome}-N.paf"
+    shell:
+        """
+        minimap2 -c -x map-ont --secondary=no {MINIMAP_OPT} {input.fa} {input.fastq} > {output.paf}
+        """
+
+# nanopore aligned by minimap with paf format for reads called nanopore-sample.fastq.gz
+rule Nanopore_minimap_paf_sample:
+    input:
+         fa="{genome}.fa", fastq="nanopore-sample.fastq.gz"
+    output:
+         paf="{genome}-NS.paf"
     shell:
         """
         minimap2 -c -x map-ont --secondary=no {MINIMAP_OPT} {input.fa} {input.fastq} > {output.paf}
@@ -216,9 +297,9 @@ rule Nanopore_minimap_paf:
 # read connections between contigs
 rule Nanopore_connections:
     input:
-         fa="{genome}.fa", view="{genome}-{reads}-N.paf.view"
+         fa="{genome}.fa", view="{genome}-{reads}.paf.view"
     output:
-         "{genome}-{reads}-N.pairs"        
+         "{genome}-{reads}.pairs"
     shell:
         """
         sort -k 3,3 -k5,5g {input.view} > {output}.tmp1
@@ -261,7 +342,7 @@ rule illumina_sample:
         list="{name}-sample-{frac}-I.list"
     shell:
         """
-        zcat {input.fq1} | perl -lane 'BEGIN {{ srand({SAMPLE_SEED}); }} if($.%4==1 && rand(1)<{wildcards.frac}) {{ print; }}' > {params.list}
+        zcat {input.fq1} | perl -lane 'BEGIN {{ srand({SAMPLE_SEED}); }} if($.%4==1 && rand(1)<{wildcards.frac}) {{ print $F[0]; }}' > {params.list}
         zcat {input.fq1} | grep -F -f {params.list} -A 3 - | grep -v '^--$' | gzip -c > {output.fq1}
         zcat {input.fq2} | grep -F -f {params.list} -A 3 - | grep -v '^--$' | gzip -c > {output.fq2}
         """
@@ -292,7 +373,7 @@ rule self_aln:
     input:
         fa="{name}.fa"
     output:
-        psl="{name}-self.psl", tab="{name}-self.tab"
+        psl="{name}-self.psl", tab="{name}-self.psl.tab"
     shell:
         """
         lastdb {output.psl}-tmp {input}

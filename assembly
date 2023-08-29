@@ -1,2 +1,3 @@
 #! /usr/bin/bash
-snakemake -s /opt/assembly-scripts/assembly.smk "$@"
+echo snakemake -s /opt/assembly-scripts/assembly.smk "$@"
+snakemake -s /opt/assembly-scripts/assembly.smk -p "$@"
