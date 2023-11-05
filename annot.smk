@@ -266,3 +266,25 @@ rule miniprot:
         """
 	miniprot -G{MAX_INTRON} {MINIPROT_OPT} --gtf {input.fa} {input.faa} > {output}
         """
+
+rule miniprot2:
+    input:
+        fa="genome.fa", faa="{name}-prot.fa"
+    output:
+        gtf="{name}-prot.gff3"
+    shell:
+        """
+	miniprot -G{MAX_INTRON} {MINIPROT_OPT} --gff {input.fa} {input.faa} > {output}.tmp
+	perl -lne 'next if /^##PAF/; if(/ID=(\w+);/) {{ $o=$1; die "target $_" unless /Target=(\S+)\s/; $n=$1; if(exists $rev{{$n}}) {{ $i=2; while(exists $rev{{"${{n}}_$i"}}) {{ $i++; }} $n="${{n}}_$i"; }} $rev{{$n}}=$o; $fwd{{$o}} = $n; s/ID=$o/ID=$n/ or die "sub1 $_"; }} elsif (/Parent=(\w+);/) {{ $o=$1; die "unknown $_" unless exists $fwd{{$o}}; $n=$fwd{{$o}}; s/Parent=$o/Parent=$n/ or die "sub2 $_"; }} s/Rank=/rank=/g; s/Identity=/identity=/g; s/Positive=/positive=/g; s/Frameshift=/frameshift=/g; s/StopCodon=/stopcodon=/g; s/Donor=/donor=/g; s/Acceptor=/acceptor=/g; print' {output}.tmp > {output}
+	rm {output}.tmp
+        """
+
+rule miniprot_gp:
+    input:
+        "{name}-prot.gff3"
+    output:
+        "{name}-prot.gp"
+    shell:
+        """
+	gff3ToGenePred {input} {output}
+        """
