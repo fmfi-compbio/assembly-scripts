@@ -22,6 +22,28 @@ rule flye:
         gzip {output.fa}.assembly_graph.gfa
         """
 
+# run miniasm assembler on nanopore data
+rule miniasm:
+    input:
+        "{genome}-N.fastq.gz"
+    output:
+        fa="{genome}-miniasm.fa"
+    shell:
+        """
+        echo "minimap2 and miniasm versions:" > {output}.log
+        minimap2 --version >> {output}.log
+        miniasm -V >> {output}.log
+        # Overlap reads
+        minimap2 -x ava-ont {MINIMAP_OPT} {input} {input} | gzip -1 > {output}.paf.gz 
+        # Layout
+        miniasm -f {input} {output.fa}.paf.gz > {output.fa}.gfa 2>>{output}.log
+        rm {output}.paf.gz
+        perl -lane 'print ">$F[1]\n$F[2]" if $F[0] eq "S"' {output}.gfa > {output}
+        gzip {output}.gfa
+        """
+
+
+        
 # run alignments of illumina reads to an assembly
 rule bwa:
     input:
@@ -78,7 +100,7 @@ rule pilon:
 
 rule pilon_unconfirmed:
      input:
-        fa="{assembly}.fa", dir=directory("{assembly}-pilon"), sizes="{assembly}.sizes"
+        fa="{assembly}.fa", dir="{assembly}-pilon", sizes="{assembly}.sizes"
      output:
         "{assembly}-unconfirmed.bw"
      shell:
@@ -120,7 +142,7 @@ rule sizes:
 	faSize -detailed {input} > {output}
         """
 
-# compare two assemblies via minimap, noe ALN in the middle
+# compare two assemblies via minimap, note ALN in the middle
 rule asm_minimap2:
     input:
         fa1="{asm1}.fa", fa2="{asm2}.fa"
@@ -129,6 +151,17 @@ rule asm_minimap2:
     shell:
         """
         minimap2 -x asm20 -c {input.fa1} {input.fa2} > {output}
+        """
+
+# compare two assemblies via minimap, specify -p param after ALN
+rule asm_minimap2_p:
+    input:
+        fa1="{asm1}.fa", fa2="{asm2}.fa"
+    output:
+        "{asm1}-ALN{p}P-{asm2}.paf"
+    shell:
+        """
+        minimap2 -x asm20 -c -p {wildcards.p} {input.fa1} {input.fa2} > {output}
         """
 
 
@@ -310,6 +343,7 @@ rule Nanopore_connections:
 	rm {output}.tmp[1234]
         """
 
+
 # group and count read connections between contigs in windows
 rule Nanopore_connections_size:
     input:
@@ -322,6 +356,42 @@ rule Nanopore_connections_size:
        sort {output}.tmp | uniq -c | sort -k1gr > {output}
        rm {output}.tmp
        """
+
+# clipped nanopore reads
+rule Nanopore_clipped_left:
+    input:
+         fa="{genome}.fa", view="{genome}-{reads}.paf.view"
+    output:
+         "{genome}-{reads}.clipL{size}.bed"
+    shell:
+        """
+        perl -lane 'die unless @F==11; if($F[1] eq "+") {{ $gap=$F[4];}} else {{ $gap=$F[3]-$F[5]; }} if($gap >= {wildcards.size}) {{ print join("\t", $F[6], $F[8], $F[8]+1, $F[2], $gap, $F[1]); }} ' {input.view} | sort -k1,1 -k2,2g > {output}
+        """
+
+# clipped nanopore reads
+rule Nanopore_clipped_right:
+    input:
+         fa="{genome}.fa", view="{genome}-{reads}.paf.view"
+    output:
+         "{genome}-{reads}.clipR{size}.bed"
+    shell:
+        """
+        perl -lane 'die unless @F==11; if($F[1] eq "-") {{ $gap=$F[4];}} else {{ $gap=$F[3]-$F[5]; }} if($gap >= {wildcards.size}) {{ print join("\t", $F[6], $F[9], $F[9]+1, $F[2], $gap, $F[1]); }} ' {input.view} | sort -k1,1 -k2,2g > {output}
+        """
+
+# bed to bedgraph
+#!!
+rule bed_to_bedgraph:
+    input:
+         bed="{genome}-{aln}.bed", sizes="{genome}.sizes"
+    output:
+         cov="{genome}-{aln}.bedgraph"
+    shell:
+        """
+        bedtools genomecov -i {input.bed} -bga -split -g {input.sizes} > {output.cov}
+        """
+         
+
 
 rule nanopore_sample:
     input:
@@ -404,6 +474,18 @@ rule psl_png:
         """
 	last-dotplot {input} {output}
 	"""
+
+rule psl_view:
+    input:
+        "{name}.psl"
+    output:
+        view="{name}.psl.view", view2="{name}.psl.view2"
+    shell:
+        """
+        perl -lane 'next unless /^[0-9]/; $g=$F[0]+$F[2]; $b=$F[1]+$F[3]+$F[5]+$F[7]; $s=sprintf "%.1f", 100*$g/($g+$b); print join("\t", @F[0..16], $s)' {input} > {output.view}
+        perl -lane 'print join("\t", @F[0,8..17])' {output.view} > {output.view2}
+	"""
+
 
 # e.g. _l100_id90 requires length 100 and id 90%, similarly 300_70
 rule psl_filter:
