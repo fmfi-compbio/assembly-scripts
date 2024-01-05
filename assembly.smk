@@ -182,7 +182,7 @@ rule blastn:
     input:
         fa1="{seq1}.fa", fa2="{seq2}.fa"
     output:
-        "{seq1}-{seq2}.blast"
+        "{seq1}-ALN-{seq2}.blast"
     shell:
         """
         makeblastdb -in {input.fa1} -dbtype nucl -out {output}.tmp
@@ -213,6 +213,24 @@ rule minimap_pdf:
         """
         /usr/local/share/miniasm/miniasm/minidot -f 12 {input} | ps2pdf -dEPSCrop - {output}
         """
+
+# compare protein fasta file (db) and dna file by blastx
+# the output is formatted similarly as paf.view files
+rule blastx:
+    input:
+        fa1="{seq1}.fa", fa2="{seq2}.fa"
+    output:
+        "{seq1}-ALNX-{seq2}.blast"
+    shell:
+        """
+        makeblastdb -in {input.fa1} -dbtype prot -out {output}.tmp
+	blastx -db {output}.tmp -query {input.fa2} -outfmt "6 qaccver qlen qstart qend saccver slen sstart send nident pident bitscore evalue" {BLASTN_OPT} > {output}.tmp2
+        rm {output}.tmp.p*
+	perl -lane '$F[6]--; ($s,$e)=@F[2,3]; $str=($s<=$e)?"+":"-"; if($str eq "-") {{ ($s,$e)=($e,$s); }} $s--; print join("\\t", $F[8], $str, @F[0,1], $s, $e, @F[4,5,6,7,9,10,11]);'  {output}.tmp2 | sort -k3,3 -k1gr > {output}
+	rm {output}.tmp2
+        """
+
+
 
 # create a more readable version of a paf file
 rule minimap_view:
@@ -290,7 +308,9 @@ rule bedgraph_to_bw:
          "{genome}-{aln}.bw"
     shell:
         """
-        bedGraphToBigWig {input.bedgraph} {input.sizes} {output}
+	sort --buffer-size=1G -k1,1 -k2,2g {input.bedgraph} > {output}.tmp
+        bedGraphToBigWig {output}.tmp {input.sizes} {output}
+        rm {output}.tmp
         """
 
 
@@ -357,6 +377,23 @@ rule Nanopore_connections_size:
        rm {output}.tmp
        """
 
+# atom sequences in reads
+# {name} is typically {genome}-{reads}
+# do filtering on paf.view before running this
+# column $F[2] is read name, $F[6] atom name
+rule atom_sequences:
+    input:
+         "{name}.paf.view"
+    output:
+         "{name}.atoms"
+    shell:
+        """
+        sort -k3,3 -k5,5g {input} > {output}.tmp1
+        perl -lane 'die unless @F==11; if(!defined $o || $o ne $F[2]) {{ printf "\n%s", $F[2]; $o=$F[2]; }} printf " %s%s", $F[6], $F[1]; END {{ print ""; }} ' {output}.tmp1 | grep . > {output}
+	rm {output}.tmp[1]
+        """
+
+
 # clipped nanopore reads
 rule Nanopore_clipped_left:
     input:
@@ -380,7 +417,6 @@ rule Nanopore_clipped_right:
         """
 
 # bed to bedgraph
-#!!
 rule bed_to_bedgraph:
     input:
          bed="{genome}-{aln}.bed", sizes="{genome}.sizes"
@@ -390,7 +426,42 @@ rule bed_to_bedgraph:
         """
         bedtools genomecov -i {input.bed} -bga -split -g {input.sizes} > {output.cov}
         """
-         
+
+# cluster by cd hit, compute cluster sizes
+# sequence names should be unique in first 19 chars
+rule cdhit_cluster:
+    input:
+         "{name}.fa"
+    output:
+         fa="{name}-cl{id,[0-9\.]+}.fa",
+         clstr="{name}-cl{id}.fa.clstr",
+         sizes="{name}-cl{id}.fa.clsizes"
+    shell:
+        """
+        cdhit-est -i {input} -o {output.fa} -c {wildcards.id}
+        perl -lane 'if(/^>/ && defined $n) {{ die unless defined $s; print "$s $n"; $n=0; $s=undef; }} elsif(/\*$/) {{ die unless />(.*)\s+\*$/; $s=$1; $s=~s/\.\.\.$//; $n++; }} else {{ $n++}} END {{  die unless defined $s; print "$s $n"; }}' < {output.clstr} > {output.sizes}
+        """
+
+rule cdhit_sizefilter:
+    input:
+         fa="{name}.fa",
+	 sizes="{name}.fa.clsizes"
+    output:
+         fa="{name}-min{size,[0-9]+}.fa", sizes="{name}-min{size}.fa.clsizes",
+    shell:
+        """
+        # get big cluster reps
+        perl -lane 'die unless @F==2; if($F[1]>={wildcards.size}) {{ print }}' {input.sizes} > {output.sizes}
+        # format for grep
+	perl -lane 'print ">$F[0]"' < {output.sizes} > {output.fa}.tmp1
+        # get names from fa for grep
+        grep ">" {input.fa} > {output.fa}.tmp2
+        # find selected names
+        grep -F -f {output.fa}.tmp1 {output.fa}.tmp2 | perl -lne 's/>//; print' > {output.fa}.tmp3
+        # get full fasta records
+	faSomeRecords {input.fa} {output.fa}.tmp3 {output.fa}
+        rm {output.fa}.tmp[123]
+	"""
 
 
 rule nanopore_sample:
@@ -455,6 +526,19 @@ rule self_aln:
         rm {output.psl}-tmp.*
         """
 
+# align reads via last with last-split (starting from reads in fasta)
+rule nano_last:
+    input:
+        ref="{genome}.fa", reads="{reads}.fa"
+    output:
+        psl="{genome}-MAP-{reads}.psl"
+    shell:
+        """
+        lastdb -uNEAR {output.psl}-tmp {input.ref}
+        lastal {output.psl}-tmp {input.reads} -E1e-10 | last-split | maf-convert psl  > {output.psl}
+        rm {output.psl}-tmp.*
+        """
+
 rule chain:
     input:
         "{name}.psl"
@@ -497,3 +581,100 @@ rule psl_filter:
         """
 	perl -lane 'die unless @F==21; next if $F[12]-$F[11]<{wildcards.length} || $F[16]-$F[15]<{wildcards.length} || ($F[0]+$F[2])<({wildcards.id}/100)*($F[0]+$F[1]+$F[2]+$F[3]+$F[5]+$F[7]); print' {input} > {output}
         """
+
+rule freebayes:
+    input:
+        fa="{name}.fa",
+        bam="{name}-I.bam"
+    output: "{name}-I.vcf"
+    shell: """
+        freebayes                           \
+            --bam {input.bam}               \
+            --fasta-reference {input.fa}   \
+            --vcf {output}
+        # --min-mapping-quality 50 --min-base-quality 20 --min-alternate-count 3
+        # --min-alternate-fraction 0.5 --min-coverage 3 --pooled-continuous
+    """
+
+rule filter_vcf:
+    input: "{name}-I.vcf",
+    output: "{name}-If.vcf"
+    shell: """
+        bcftools view \
+          --trim-alt-alleles \
+          --exclude 'GT="ref" || QUAL<5' \
+          {input} > {output}
+    """
+
+# polishing by freebayes
+# take variants with genotype 1/1 or 1/2 and apply them
+rule vcf_apply_alt_only:
+    input:
+      vcf="{name}-If.vcf",
+      fa="{name}.fa",
+    output:
+      vcf="{name}-If1.vcf.gz",
+      fa="{name}F.fa"
+    shell: """
+        bcftools view --include 'GT="1/1" || GT="1/2"' {input.vcf} | bgzip -c > {output.vcf}
+        bcftools index -t {output.vcf}
+	bcftools consensus -H 1 -f {input.fa} {output.vcf} > {output.fa}
+    """
+
+# create two haplotypes
+#  preferably on sequence polished by freebayes (suffix F.fa)
+rule hapcut2:
+    input:
+        bam="{name}-N.bam",
+        vcf="{name}-If.vcf",
+        fa="{name}.fa"
+    log:
+        hair="{name}H.hairlog",
+        cut="{name}H.cutlog",
+    output:
+        bl="{name}H.blocks",
+        vcfgz="{name}H.vcf.gz",
+        tbi="{name}H.vcf.gz.tbi"
+    params: "{name}H"
+    shell: """
+        extractHAIRS \
+           --bam {input.bam} \
+           --VCF {input.vcf} \
+           --ont 1 \
+           --indels 1 \
+           --triallelic 1 \
+           --ref {input.fa} \
+           --out {params}.fragment 2> {log.hair}
+        HAPCUT2 \
+            --fragments {params}.fragment \
+            --VCF {input.vcf} \
+            --output {output.bl} \
+            --outvcf 1 2> {log.cut}
+        mv {output.bl}.phased.VCF {params}.vcf
+        bgzip {params}.vcf
+        bcftools index -t {output.vcfgz}  
+    """
+
+rule haplotyped_fasta:
+    input:
+        fa="{name}.fa",
+        vcf="{name}H.vcf.gz",
+        tbi="{name}H.vcf.gz.tbi"
+    output: "{name}H{haplotype,[12]}.fa"
+    shell: """
+        bcftools consensus -H {wildcards.haplotype} -f {input.fa} {input.vcf} > {output}
+    """
+
+rule concat_haplotyped_fasta:
+   input:
+     fa1="{name}H1.fa",
+     fa2="{name}H2.fa"
+   output:
+     "{name}H.fa"
+   shell:
+     """
+     perl -lne 's/>(.*)$/>$1_h1/; print;' {input.fa1} > {output}.tmp1 
+     perl -lne 's/>(.*)$/>$1_h2/; print;' {input.fa2} > {output}.tmp2
+     cat {output}.tmp1 {output}.tmp2 > {output}
+     rm {output}.tmp1 {output}.tmp2
+     """
