@@ -11,8 +11,11 @@ SCRIPT_PATH = "/opt/assembly-scripts"
 RFAM_OPT = "--cpu 6"
 AUGUSTUS_DIR = "/usr/local/share/augustus-3.2.3/augustus-3.2.3"
 AUGUSTUS_OPT = "--alternatives-from-evidence=false --alternatives-from-sampling=false"
+AUGUSTUS_TRAIN_UTR = 1000
+AUGUSTUS_TRAIN_PROT_ID = 0.7
 GENETIC_CODE = 1
 MINIPROT_OPT = "-t4 -j1"  # j1 is non-mammalian splice sites
+BLASTP_OPT = "-evalue 1e-5 -num_alignments 10000 -num_threads 4"
 
 rule rna_trim:
     input:
@@ -88,6 +91,43 @@ rule transcripts_blat:
         pslCDnaFilter {CDNAFILTER_OPT} {params.tmp_psl} {output.psl} 2> {output.log}
         rm {params.tmp_psl}
         """
+
+# intermediate step in transcript orfs
+# files tr-exons.gtf and tr-CDS.gtf can be deleted
+rule transcripts_exons:
+    input:
+       "{rnaseq}_tr.psl"
+    output:
+       "{rnaseq}_tr-exons.gtf"
+    params:
+       tmp_bed="{rnaseq}_tr.tmp.bed",
+       tmp2_bed="{rnaseq}_tr.tmp2.bed",
+       tmp_gp="{rnaseq}_tr.tmp.gp",
+       tmp_gtf="{rnaseq}_tr.tmp.gtf",
+    shell:
+        """
+	pslToBed {input} {params.tmp_bed}
+        # make names unique
+	perl -lane '$F[3] .= "_" . $.; print join("\t", @F)' {params.tmp_bed} > {params.tmp2_bed}
+        bedToGenePred {params.tmp2_bed} {params.tmp_gp}
+        genePredToGtf file {params.tmp_gp} {params.tmp_gtf} 
+        # we get strange gtf incl. start/stop...
+        # keep only exons, remove strand, sort
+        perl -F'"\\t"' -lane 'next unless $F[2] eq "exon"; $F[6]="."; print join("\\t", @F);' {params.tmp_gtf} | sort -k1,1 -k4,4g > {output}
+        rm {params.tmp_bed} {params.tmp2_bed} {params.tmp_gp} {params.tmp_gtf}
+        """
+
+rule transcripts_orfs:
+    input:
+       "{rnaseq}_tr-CDS.gtf"
+    output:
+       "{rnaseq}_tr_orfs.gp"
+    shell:
+        """
+	gtfToGenePred -genePredExt {input} {output}
+        """
+
+
 
 rule bam_star:
     input:
@@ -216,7 +256,7 @@ rule au_gp:
     input:
         "au-{name}.orig.gtf"
     output:
-        "au-{name}.gp"
+        "au-{name,[a-zA-Z0-9_-]+}.gp"
     shell:
         """
         perl -lane 'print unless /^#/ || $F[1] ne "AUGUSTUS" || $F[2] eq "gene" || $F[2] eq "transcript"' {input} > {output}.tmp.gtf
@@ -255,6 +295,115 @@ rule exons2CDS:
         /opt/assembly-scripts/filter-gtf -p "INPUT {input} OUTPUT {output}" /opt/assembly-scripts/about/add_cds.about genome.fa
         """
 
+# list of supported transcripts for training
+rule supported_by_transcripts:
+    input:
+        cdna="{name}-cdna.fa", tr="transcripts.fa"
+    output:
+        "{name}-supTr.list"
+    shell:
+        """
+        blat -noHead -maxIntron=10 {input.tr} {input.cdna} {output}.tmp.psl
+        # get only transcripts with 99% coverage by aln,
+        #99% identity and no gaps
+        #(gaps = potential bad introns or frameshifts)
+        perl -lane '$m = $F[11]+($F[10]-$F[12]); $g=$F[0]+$F[2]; $gap=$F[5]+$F[7]; $b=$F[1]+$F[3]+$gap; print if $m<0.01*$F[10] && $b/($g+$b)<0.01 && $gap==0' {output}.tmp.psl  > {output}.tmp2.psl
+        perl -lane 'print $F[9]' {output}.tmp2.psl | sort | uniq > {output}
+        wc -l {output}
+        rm {output}.tmp.psl {output}.tmp2.psl
+        """
+
+rule supported_by_other_prot:
+    input:
+        pred="{name}-prot.fa", other="other-prot.fa"
+    output:
+        "{name}-supProt.list"
+    shell:
+        """
+        blat -noHead -prot {input.other} {input.pred} {output}.tmp.psl
+	perl -lane 'print $F[9] if $F[0]>{AUGUSTUS_TRAIN_PROT_ID}*$F[14] && $F[0]>{AUGUSTUS_TRAIN_PROT_ID}*$F[10] && $F[8] eq "+"'  {output}.tmp.psl | sort -u > {output}
+        wc -l {output}
+        rm {output}.tmp.psl
+        """
+
+rule filter_supported:
+    input:
+        gtf="{name}.gtf", list="{name}-sup{type}.list"
+    output:
+        "{name}-sup{type,[a-zA-Z]+}.gtf"
+    shell:
+        """
+	perl -lane 'print "transcript_id \\"$_\\";"' {input.list} > {output}.tmp.list
+        grep -F -f {output}.tmp.list {input.gtf} > {output}
+        rm {output}.tmp.list
+        """
+
+rule deoverlap_gtf:
+    input:
+        "{name}.gtf"
+    output:
+        "{name}-single.gtf"
+    shell:
+        """
+        {SCRIPT_PATH}/deoverlap.pl {input} {output}
+        """
+
+# list of non-overlapping transcripts for training
+rule list_for_training:
+    input:
+        "{name}-single.gtf"
+    output:
+        "{name}-single.list"
+    shell:
+        """
+	perl -F'"\\t"' -lane 'if(/transcript_id "([^"]+)";/) {{ print $1; }}' {input} | sort -u > {output}
+        """
+
+# list of non-overlapping transcripts for training
+rule augustus_training_gb:
+    input:
+        list="{name}-sup{type}-single.list",
+        gtf="{name}.gtf",
+        fa="genome.fa"
+    output:
+        "{name}-sup{type,[a-zA-Z]+}-single.train.gb"
+    shell:
+        """
+        {AUGUSTUS_DIR}/scripts/gtf2gff.pl  < {input.gtf} --out={output}.tmp.gff
+        {AUGUSTUS_DIR}/scripts/gff2gbSmallDNA.pl --good={input.list} {output}.tmp.gff genome.fa {AUGUSTUS_TRAIN_UTR} {output}
+        rm {output}.tmp.gff
+"""
+
+# augustus training
+rule augustus_train:
+    input:
+        cfg="au-{cfg}.cfg"
+    output:
+        directory("au-{cfg}-train")
+    shell:
+        """
+        export SP=`head -n 1 {input.cfg}`
+        export DIR=`tail -n +2 {input.cfg} | head -n 1`
+	export DATA=`tail -n +3 {input.cfg} | head -n 1`
+        echo "SP:'$SP'  DIR:'$DIR'  DATA:'$DATA'"
+	perl -le "die \\"empty line 3\\" unless length(\\"$DATA\\")>0"
+	perl -le "die \\"$DATA does not exist\\" unless -r \\"$DATA\\""
+	perl -le "die \\"bad dir $DIR\\" unless \\"$DIR\\" eq \\"{output}/config/\\""
+	mkdir -p {output}/config
+	cp -pr {AUGUSTUS_DIR}/config/cgp/  {output}/config/
+	cp -pr {AUGUSTUS_DIR}/config/extrinsic/  {output}/config/
+	cp -pr {AUGUSTUS_DIR}/config/model/  {output}/config/
+	cp -pr {AUGUSTUS_DIR}/config/profile/  {output}/config/
+	#cp -pr {AUGUSTUS_DIR}/config/ {output}
+        #rm -r {output}/species
+        mkdir {output}/config/species
+        cp -pr {AUGUSTUS_DIR}/config/species/generic {output}/config/species/
+        {AUGUSTUS_DIR}/scripts/new_species.pl --AUGUSTUS_CONFIG_PATH=`pwd`/{output}/config --species=$SP
+        perl -lne 's/stopCodonExcludedFromCDS false/stopCodonExcludedFromCDS true/; print' -i {output}/config/species/$SP/${{SP}}_parameters.cfg
+        export AUGUSTUS_CONFIG_PATH=`pwd`/{output}/config ;{AUGUSTUS_DIR}/bin/etraining --species=$SP $DATA &> {output}.log
+	"""
+
+
 # align proteins by miniprot
 # gtf should be sorted in the same order as genome.fa
 rule miniprot:
@@ -288,3 +437,50 @@ rule miniprot_gp:
         """
 	gff3ToGenePred {input} {output}
         """
+
+# compare 2 protein fasta files by BLASTP
+rule blastp:
+    input:
+        fa1="{seq1}.fa", fa2="{seq2}.fa"
+    output:
+        "{seq1}-BLASTP-{seq2}.blast"
+    shell:
+        """
+        makeblastdb -in {input.fa1} -dbtype prot -out {output}.tmp
+        blastp -db {output}.tmp -query {input.fa2} -task blastp -outfmt "6 qaccver qlen qstart qend saccver slen sstart send nident pident bitscore evalue" {BLASTP_OPT} > {output}.tmp2
+        rm {output}.tmp.p*
+        perl -lane '$F[2]--; ($s,$e)=@F[6,7]; $str=($s<=$e)?"+":"-"; if($str eq "-") {{ ($s,$e)=($e,$s); }} $s--; print join("\\t", $F[8], $str, @F[0,1,2,3,4,5], $s, $e, @F[9,10,11]);'  {output}.tmp2 | sort -k3,3 -k1gr > {output}
+        rm {output}.tmp2
+        """
+
+# reduce blast results
+rule reduce_blast:
+    input: "{name}.blast"
+    output: "{name}-reduced{id}-{best}.blast"
+    shell:
+      """
+      # filter those with matches less than [id] fraction of length of both query and target
+      perl -lane 'print if $F[0]>={wildcards.id}*$F[3] && $F[0]>={wildcards.id}*$F[7]' {input} > {output}.tmp
+      # on both sides keep only prots within [best] fraction of best match 
+      sort -k3,3 -k12gr {output}.tmp | perl -lane 'if($F[2] eq $o) {{ next unless $F[11]>={wildcards.best}*$m; }} else {{$o = $F[2]; $m=$F[11]; }} print ' > {output}.tmp2
+      sort -k7,7 -k12gr {output}.tmp2 | perl -lane 'if($F[6] eq $o) {{ next unless $F[11]>={wildcards.best}*$m; }} else {{$o = $F[6]; $m=$F[11]; }} print ' > {output}
+      wc -l {input} {output}.tmp {output}.tmp2 {output} > {output}.log
+      rm {output}.tmp {output}.tmp2
+      """
+
+
+# correspondence table
+# for each target (column 3) count how many times in the table
+# then create tsv sorted by query which contains all targets
+# for query list its id and length, for each target its length, number of matches and how many times in the table
+rule blast_table:
+    input: "{name}.blast"
+    output: "{name}.tsv"
+    shell:
+      """
+      perl -lane 'print $F[2]' {input} | sort | uniq -c | sort -k2 > {output}.tmp
+      sort -k3,3 {input} > {output}.tmp2
+      join -1 2 -2 3 {output}.tmp {output}.tmp2 | perl -lane 'print join("\t", @F[7,8,0], join(";", @F[4,2,1]))' | sort > {output}.tmp3
+      perl -lane 'if($.==1 || $F[0] ne $o) {{ print "" if $.>1; printf "%s\t\%d", $F[0], $F[1]; }} printf "\t%s\t%s", $F[2], $F[3]; $o=$F[0]; END {{ print "" }} ' {output}.tmp3 > {output}
+      rm {output}.tmp {output}.tmp2 {output}.tmp3
+     """ 
