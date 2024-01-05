@@ -74,6 +74,7 @@ open $in, "<", $region_list or die;
 my $out;
 open $out, ">", "$dir/regions.bed" or die;
 while(my $line = <$in>) {
+    chomp $line;
     my @parts = split " ", $line;
     next if @parts==0 || $line =~ /^\#/;   # skip empty lines and comments
 
@@ -93,7 +94,7 @@ while(my $line = <$in>) {
 	$parts[4] = $name . "_CONT";
     }
     $len += $parts[2]-$parts[1];
-    push @{$names{$name}}, $len;
+    push @{$names{$name}}, $len . "  # after: $line";
     print $out join("\t", @parts[0..2, 4], 0, $parts[3]), "\n";    
 }
 close($out) or die;
