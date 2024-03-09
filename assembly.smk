@@ -427,7 +427,7 @@ rule bed_to_bedgraph:
         bedtools genomecov -i {input.bed} -bga -split -g {input.sizes} > {output.cov}
         """
 
-# cluster by cd hit, compute cluster sizes
+# cluster by cd hit
 # sequence names should be unique in first 19 chars
 rule cdhit_cluster:
     input:
@@ -435,12 +435,24 @@ rule cdhit_cluster:
     output:
          fa="{name}-cl{id,[0-9\.]+}.fa",
          clstr="{name}-cl{id}.fa.clstr",
-         sizes="{name}-cl{id}.fa.clsizes"
     shell:
         """
         cdhit-est -i {input} -o {output.fa} -c {wildcards.id}
-        perl -lane 'if(/^>/ && defined $n) {{ die unless defined $s; print "$s $n"; $n=0; $s=undef; }} elsif(/\*$/) {{ die unless />(.*)\s+\*$/; $s=$1; $s=~s/\.\.\.$//; $n++; }} else {{ $n++}} END {{  die unless defined $s; print "$s $n"; }}' < {output.clstr} > {output.sizes}
         """
+
+# compute cluster sizes from cdhit output
+# the output will contain size of cluster for each cluster center
+# sequence names should be unique in first 19 chars
+rule cdhit_sizes:
+    input:
+         clstr="{name}.fa.clstr",
+    output:
+         sizes="{name}.fa.clsizes"
+    shell:
+        """
+        perl -lane 'if(/^>/ && defined $n) {{ die unless defined $s; print "$s $n"; $n=0; $s=undef; }} elsif(/\*$/) {{ die unless />(.*)\s+\*$/; $s=$1; $s=~s/\.\.\.$//; $n++; }} else {{ $n++}} END {{  die unless defined $s; print "$s $n"; }}' < {input.clstr} > {output.sizes}
+        """
+
 
 rule cdhit_sizefilter:
     input:
@@ -526,6 +538,21 @@ rule self_aln:
         rm {output.psl}-tmp.*
         """
 
+rule last_split_genome_aln:
+    input:
+        fa1="{name1}.fa", fa2="{name2}.fa"
+    output:
+        psl="{name1}-LASTSPLIT-{name2}.psl", tab="{name1}-LASTSPLIT-{name2}.psl.tab"
+    shell:
+        """
+        lastdb {output.psl}-tmp {input.fa1}
+        lastal {output.psl}-tmp {input.fa2} -E1e-10 | last-split > {output.psl}.maf
+        maf-convert psl {output.psl}.maf > {output.psl}
+        maf-convert tab {output.psl}.maf > {output.tab}
+        rm {output.psl}.maf {output.psl}-tmp.*
+        """
+
+
 # align reads via last with last-split (starting from reads in fasta)
 rule nano_last:
     input:
@@ -595,6 +622,21 @@ rule freebayes:
         # --min-mapping-quality 50 --min-base-quality 20 --min-alternate-count 3
         # --min-alternate-fraction 0.5 --min-coverage 3 --pooled-continuous
     """
+
+rule freebayes2:
+    input:
+        fa="{name}.fa",
+        bam="{name}-MAP-{reads}-I.bam"
+    output: "{name}-MAP-{reads}-I.vcf"
+    shell: """
+        freebayes                           \
+            --bam {input.bam}               \
+            --fasta-reference {input.fa}   \
+            --vcf {output}
+        # --min-mapping-quality 50 --min-base-quality 20 --min-alternate-count 3
+        # --min-alternate-fraction 0.5 --min-coverage 3 --pooled-continuous
+    """
+
 
 rule filter_vcf:
     input: "{name}-I.vcf",
@@ -678,3 +720,57 @@ rule concat_haplotyped_fasta:
      cat {output}.tmp1 {output}.tmp2 > {output}
      rm {output}.tmp1 {output}.tmp2
      """
+
+rule kmer_bedgraph:
+   input: "{name}.fa"
+   output: "{name}-kmers{K,[0-9]+}.bedgraph"
+   shell:
+      """
+      {SCRIPT_PATH}/find_kmers.pl 21 < {input} | sort --buffer-size=1G | uniq -c > {output}.tmp1
+      {SCRIPT_PATH}/find_kmers.pl -b 21 < {input} | sort --buffer-size=1G -k4 > {output}.tmp2
+      join -1 2 -2 4 {output}.tmp1 {output}.tmp2 | perl -lane 'print join("\t", @F[2,3,4,1])' | sort --buffer-size=1G -k1,1 -k2,2g > {output}
+      rm {output}.tmp1 {output}.tmp2
+      """
+
+# create sliding windows, keep only full-length ones
+# (except for full sequence of too short)
+rule windows:
+    input: "{name}.sizes"
+    output: "{name}-windows{size}bp-{slide}bp.bed"
+    shell:
+      """      
+      bedtools makewindows -w {wildcards.size} -s {wildcards.slide} -g {input} | perl -lane 'print if $F[1]==0 || $F[2]-$F[1]=={wildcards.size}' > {output}
+      """
+
+# take median in each windw, slow
+rule smooth_bedgraph:
+     input:
+       bg="{genome}-{name}.bedgraph",
+       bed="{genome}-windows{size}bp-1bp.bed"
+     output: "{genome}-{name}-smooth{size}bp.bedgraph"
+     shell:
+       """
+       bedtools map -b {input.bg} -a {input.bed} -c 4 -o median > {output}.tmp
+       perl -lane '$h=int(($F[2]+$F[1])/2); print join("\t", $F[0], $h, $h+1, $F[3]);' {output}.tmp > {output}
+       rm {output}.tmp
+       """
+
+# compute overall coverage median
+rule bedgraph_median:
+     input: "{name}.bedgraph"
+     output: "{name}.bedgraph-median"
+     shell:
+       """
+       R --vanilla --slave -e 'a=read.table("{input}"); cat(median(rep(a$V4, times=a$V3-a$V2)));' > {output}
+       """
+
+# compute coverage normalized by median
+rule bedgraph_norm:
+     input:
+       bg="{name}.bedgraph",
+       med="{name}.bedgraph-median"
+     output: "{name}-norm.bedgraph"
+     shell:
+       """
+       perl -lane 'BEGIN {{ $X = `cat {input.med}`; }} $F[3] = sprintf("%.5f", $F[3]/$X); print join("\\t", @F); ' {input.bg} > {output}
+       """
