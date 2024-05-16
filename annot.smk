@@ -292,7 +292,7 @@ rule exons2CDS:
         "{name}-CDS.gtf"
     shell:
         """
-        /opt/assembly-scripts/filter-gtf -p "INPUT {input} OUTPUT {output}" /opt/assembly-scripts/about/add_cds.about genome.fa
+        {SCRIPT_PATH}/filter-gtf -p "INPUT {input} OUTPUT {output}" /opt/assembly-scripts/about/add_cds.about genome.fa
         """
 
 # list of supported transcripts for training
@@ -416,6 +416,7 @@ rule miniprot:
 	miniprot -G{MAX_INTRON} {MINIPROT_OPT} --gtf {input.fa} {input.faa} > {output}
         """
 
+# miniprot prodicing gff3 for later conversion to gp
 rule miniprot2:
     input:
         fa="genome.fa", faa="{name}-prot.fa"
@@ -424,7 +425,7 @@ rule miniprot2:
     shell:
         """
 	miniprot -G{MAX_INTRON} {MINIPROT_OPT} --gff {input.fa} {input.faa} > {output}.tmp
-	perl -lne 'next if /^##PAF/; if(/ID=(\w+);/) {{ $o=$1; die "target $_" unless /Target=(\S+)\s/; $n=$1; if(exists $rev{{$n}}) {{ $i=2; while(exists $rev{{"${{n}}_$i"}}) {{ $i++; }} $n="${{n}}_$i"; }} $rev{{$n}}=$o; $fwd{{$o}} = $n; s/ID=$o/ID=$n/ or die "sub1 $_"; }} elsif (/Parent=(\w+);/) {{ $o=$1; die "unknown $_" unless exists $fwd{{$o}}; $n=$fwd{{$o}}; s/Parent=$o/Parent=$n/ or die "sub2 $_"; }} s/Rank=/rank=/g; s/Identity=/identity=/g; s/Positive=/positive=/g; s/Frameshift=/frameshift=/g; s/StopCodon=/stopcodon=/g; s/Donor=/donor=/g; s/Acceptor=/acceptor=/g; print' {output}.tmp > {output}
+	perl -lne 'next if /^##PAF/; if(/ID=(\w+);/) {{ $o=$1; die "target $_" unless /Target=(\S+)\s/; $n=$1; if(exists $rev{{$n}}) {{ $i=2; while(exists $rev{{"${{n}}_c$i"}}) {{ $i++; }} $n="${{n}}_c$i"; }} $rev{{$n}}=$o; $fwd{{$o}} = $n; s/ID=$o/ID=$n/ or die "sub1 $_"; }} elsif (/Parent=(\w+);/) {{ $o=$1; die "unknown $_" unless exists $fwd{{$o}}; $n=$fwd{{$o}}; s/Parent=$o/Parent=$n/ or die "sub2 $_"; }} s/Rank=/rank=/g; s/Identity=/identity=/g; s/Positive=/positive=/g; s/Frameshift=/frameshift=/g; s/StopCodon=/stopcodon=/g; s/Donor=/donor=/g; s/Acceptor=/acceptor=/g; print' {output}.tmp > {output}
 	rm {output}.tmp
         """
 
@@ -437,6 +438,19 @@ rule miniprot_gp:
         """
 	gff3ToGenePred {input} {output}
         """
+
+# remove counters from multi-mapping proteins
+# may not work if some protein names end in _c<number>
+rule miniprot_browser_gp:
+    input:
+        "{name}-prot.gp"
+    output:
+        "{name}-prot-browser.gp"
+    shell:
+        """
+	perl -F'"\\t"' -lane '$F[0]=~s/_c[0-9]+$//; print join("\\t", @F);' {input} > {output}
+        """
+     
 
 # compare 2 protein fasta files by BLASTP
 rule blastp:
