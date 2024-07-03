@@ -1,0 +1,3 @@
+#! /usr/bin/bash
+echo snakemake -s /opt/assembly-scripts/nanopore.smk "$@"
+snakemake -s /opt/assembly-scripts/nanopore.smk -p "$@"
