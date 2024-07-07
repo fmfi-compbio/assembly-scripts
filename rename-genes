@@ -1,0 +1,3 @@
+#! /usr/bin/bash
+echo snakemake -s /opt/assembly-scripts/rename-genes.smk "$@"
+snakemake -s /opt/assembly-scripts/rename-genes.smk -p "$@"

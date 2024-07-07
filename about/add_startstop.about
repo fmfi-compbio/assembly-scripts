@@ -1,0 +1,10 @@
+option gtf_input_file INPUT
+filter read_gtf
+
+filter add_start_codon
+filter add_stop_codon
+
+filter compute_coverage
+
+option gtf_output_file OUTPUT
+filter write_gtf
