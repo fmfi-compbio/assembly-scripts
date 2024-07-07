@@ -83,9 +83,9 @@ close IN;
 
 
 #read fasta and print proteins
-open IN, "<$input_fasta" or die;
-open OUT_RNA, ">$output_rna" or die;
-open OUT_PROT, ">$output_prot" or die;
+open IN, "<$input_fasta" or die "cannot open $input_fasta";
+open OUT_RNA, ">$output_rna" or die "cannot open $output_rna for writing";
+open OUT_PROT, ">$output_prot" or die "cannot open $output_prot for writing";
 while(1) {
    my ($name, $seq) = read_fasta(\*IN);
 
