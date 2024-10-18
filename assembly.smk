@@ -1,6 +1,7 @@
 FLYE_OPT = "-t 4"
 BWA_OPT = "-t 4"
 MINIMAP_OPT = "-t 4"
+RACON_OPT = "-t 4"
 BLASTN_OPT = "-evalue 1e-5 -num_alignments 10000 -num_threads 4"
 SAMPLE_SEED = 42
 SCRIPT_PATH = "/opt/assembly-scripts"
@@ -41,7 +42,6 @@ rule miniasm:
         perl -lane 'print ">$F[1]\n$F[2]" if $F[0] eq "S"' {output}.gfa > {output}
         gzip {output}.gfa
         """
-
 
         
 # run alignments of illumina reads to an assembly
@@ -107,6 +107,18 @@ rule pilon_unconfirmed:
          """
          wigToBigWig {input.dir}/pilonUnconfirmed.wig {input.sizes} {output}
          """
+
+# racon any assembly
+rule racon:
+    input:
+        fa="{assembly}.fa", paf="{assembly}-N.paf", fq="nanopore.fastq.gz"
+    output:
+        fa="{assembly}r.fa"
+    shell:
+        """
+        racon {RACON_OPT} -u {input.fq} {input.paf} {input.fa} > {output}
+        """
+
 
 # quast for any assembly
 rule quast:
@@ -393,8 +405,21 @@ rule atom_sequences:
 	rm {output}.tmp[1]
         """
 
+# run-length encoding of atom sequences
+# for easier analysis of tandem repeats
+rule reduce_atom_sequences:
+    input:
+         "{name}.atoms"
+    output:
+         "{name}.atomsR"
+    shell:
+        """
+        perl -lane 'my @G; $o=""; push @F, "X"; foreach $f (@F) {{ if($f eq $o) {{ $n++; }} else {{ if($n>1) {{ $o.="X".$n; }} push @G, $o; $n=1; $o=$f; }} }}; print join(" ", @G);' {input} > {output}
+        """  
 
-# clipped nanopore reads
+
+
+# stats on clipped nanopore reads
 rule Nanopore_clipped_left:
     input:
          fa="{genome}.fa", view="{genome}-{reads}.paf.view"
@@ -774,3 +799,16 @@ rule bedgraph_norm:
        """
        perl -lane 'BEGIN {{ $X = `cat {input.med}`; }} $F[3] = sprintf("%.5f", $F[3]/$X); print join("\\t", @F); ' {input.bg} > {output}
        """
+
+# nanoplot on nanopore reads
+rule nanoplot:
+     input: "{name}-N.fastq.gz"
+     output:
+        dir=directory("{name}-N.len{size}.plot"),
+	txt="{name}-N.len{size}.plot.txt"
+     shell:
+        """
+        NanoPlot --fastq {input} --maxlength {wildcards.size} -o {output.dir}
+        cp {output.dir}/NanoStats.txt {output.txt}
+        """
+
