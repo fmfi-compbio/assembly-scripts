@@ -1,0 +1,5 @@
+dorado_path: dorado-0.7.2
+dorado_model_fast_path: /opt/dorado-models/dna_r10.4.1_e8.2_400bps_fast@v5.0.0
+dorado_model_slow_path: /opt/dorado-models/dna_r10.4.1_e8.2_400bps_sup@v5.0.0
+dorado_device: "cuda:0"
+nanoplot_maxlen: 30000
