@@ -302,7 +302,7 @@ rule Nanopore_minimap_bam_sample:
     	samtools index {output.bam}
         """
 
-# create coverage from bam file (for illumina / rnaseq coverage)
+# create coverage from bam file (for illumina / nanopore / rnaseq coverage)
 rule bam_to_bedgraph:
     input:
          bam="{aln}.bam"
@@ -323,6 +323,36 @@ rule bedgraph_to_bw:
 	sort --buffer-size=1G -k1,1 -k2,2g {input.bedgraph} > {output}.tmp
         bedGraphToBigWig {output}.tmp {input.sizes} {output}
         rm {output}.tmp
+        """
+
+rule bedgrap_to_lowcov:
+    input:
+         bedgraph="{name}.bedgraph"
+    output:
+         r"{name}-low{mincov,\d+}.bed"
+    shell:
+        """
+	# get regions with coverage lower than {wildcards.mincov}
+        perl -lane 'print if $F[3]<{wildcards.mincov}' {input} > {output}
+        """
+
+rule bed_merge:
+     input: "{name}.bed"
+     output:  r"{name}-merge4C{maxdist,\d+}.bed"
+     shell:
+        """
+        # merge regions with distance less than {wildcards.maxdist}
+        # and compute mean of column 4 of a bed file
+        bedtools merge -d {wildcards.maxdist} -c 4 -o mean -i {input} > {output}
+        """
+
+rule bed_minlen:
+     input: "{name}.bed"
+     output:  r"{name}-minlen{minlen,\d+}.bed"
+     shell:
+        """
+        # keep only regions of length at least {wildcards.minlen}
+        perl -lane 'print if $F[2]-$F[1]>={wildcards.minlen}' {input} > {output}
         """
 
 
@@ -358,6 +388,34 @@ rule Nanopore_minimap_paf_sample:
         """
         minimap2 -c -x map-ont --secondary=no {MINIMAP_OPT} {input.fa} {input.fastq} > {output.paf}
         """
+
+# nanopore aligned by minimap with paf format for reads called nanopore.fastq.gz
+# and with prohibiting long alignment gaps
+rule Nanopore_minimap_paf_maxgap:
+    input:
+         fa="{genome}.fa", fastq="nanopore.fastq.gz"
+    output:
+         paf="{genome}-maxgap{maxgap,\d+}-N.paf"
+    shell:
+        """
+        minimap2 -c -x map-ont --secondary=no -r{wildcards.maxgap},{wildcards.maxgap} -g {wildcards.maxgap} {MINIMAP_OPT} {input.fa} {input.fastq} > {output.paf}
+        """
+
+# get coverage from paf.view, but subtract something from each alignment
+rule paf_view_cov:
+    input:
+         paf="{name}.paf.view", sizes="{name}.sizes"
+    output:
+         bedgraph="{name}-trim{trim,\d+}.bedgraph"
+    shell:
+        """
+	perl -lane '$t={wildcards.trim}; next unless $F[9]-$F[8]>2*$t; $F[8]+=$t; $F[9]-=$t; print join("\t", @F[6,8,9])' {input.paf} | sort --buffer-size=1G -k1,1 -k2g > {output}.tmp
+	bedtools genomecov -i {output}.tmp -bga -g {input.sizes} > {output}
+	rm {output}.tmp
+        """
+
+
+
 
 # read connections between contigs
 rule Nanopore_connections:
