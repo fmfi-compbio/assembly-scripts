@@ -320,7 +320,7 @@ rule bedgraph_to_bw:
          "{genome}-{aln}.bw"
     shell:
         """
-	sort --buffer-size=1G -k1,1 -k2,2g {input.bedgraph} > {output}.tmp
+	LC_COLLATE=C sort --buffer-size=1G -k1,1 -k2,2g {input.bedgraph} > {output}.tmp
         bedGraphToBigWig {output}.tmp {input.sizes} {output}
         rm {output}.tmp
         """
@@ -870,3 +870,21 @@ rule nanoplot:
         cp {output.dir}/NanoStats.txt {output.txt}
         """
 
+# annotate rrna genes
+rule rrna:
+     input: "{name}.fa"
+     output: "{name}-rrna.bed"
+     shell:
+        """
+        cmfetch /extdata/Rfam/12.3/Rfam.cm LSU_rRNA_eukarya > {output}-tmp-lsu.cm
+        cmfetch /extdata/Rfam/12.3/Rfam.cm SSU_rRNA_eukarya > {output}-tmp-ssu.cm
+        cmfetch /extdata/Rfam/12.3/Rfam.cm 5_8S_rRNA > {output}-tmp-5_8s.cm
+        cmfetch /extdata/Rfam/12.3/Rfam.cm 5S_rRNA > {output}-tmp-5s.cm
+        cmsearch --cpu 1 --tblout {output}-tmp-lsu.tbl {output}-tmp-lsu.cm {input} > {output}-tmp
+        cmsearch --cpu 1 --tblout {output}-tmp-ssu.tbl {output}-tmp-ssu.cm {input} > {output}-tmp
+        cmsearch --cpu 1 --tblout {output}-tmp-5_8s.tbl {output}-tmp-5_8s.cm {input} > {output}-tmp
+        cmsearch --cpu 1 --tblout {output}-tmp-5s.tbl {output}-tmp-5s.cm {input} > {output}-tmp
+        cat {output}-tmp-lsu.tbl {output}-tmp-ssu.tbl {output}-tmp-5_8s.tbl {output}-tmp-5s.tbl > {output}-tmp.tbl
+        grep -v '#' {output}-tmp.tbl | perl -lane '@F[7,8]=@F[8,7] if $F[7]>$F[8]; print join("\t", @F[0,7,8,2,15,9])' | sort -k1,1 -k2,2g > {output}
+        rm {output}-tmp-lsu.cm {output}-tmp-ssu.cm {output}-tmp-5_8s.cm {output}-tmp-5s.cm {output}-tmp {output}-tmp-lsu.tbl {output}-tmp-ssu.tbl {output}-tmp-5_8s.tbl {output}-tmp-5s.tbl {output}-tmp.tbl
+        """
