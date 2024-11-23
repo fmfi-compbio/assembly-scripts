@@ -21,7 +21,7 @@ rule pod5ToBamFast:
 
 # basecall whole reads folder using slow basecaller
 rule pod5ToBamSlow:
-     input: directory("reads")
+     input: "reads"
      output: "reads-unaligned.bam"
      shell:
        """
@@ -159,9 +159,9 @@ rule new_stats:
 nanoplot_columns = [
   ('reads','number_of_reads'),
   ('total_bp','number_of_bases'),
-  ('median_len', 'median_read_length'),
-  ('mean_len', 'mean_read_length'),
-  ('n50_len', 'n50'),
+  ('med_ln', 'median_read_length'),
+  ('mean_ln', 'mean_read_length'),
+  ('n50_ln', 'n50'),
   ('med_id', 'median_identity'),
   ('med_qual', 'median_qual')
 ]
