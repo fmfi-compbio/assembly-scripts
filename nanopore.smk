@@ -69,7 +69,7 @@ rule minimap_view:
         "{aln}.paf.view"
     shell:
         """
-        perl -lane '$id=sprintf("%.1f", $F[9]*100/$F[10]); print join("\t", @F[9,4,0..3,5..8],$id)' {input} > {output}
+        perl -lane '$id=sprintf("%.1f", $F[9]*100/$F[10]); print join("\\t", @F[9,4,0..3,5..8],$id)' {input} > {output}
         """
 
 # nanopore aligned by minimap with paf format
@@ -199,7 +199,7 @@ rule fasta_stats:
          stats="{name}.stats"
     shell:
         """
-        faSize {input} |  perl -lane 'BEGIN {{ print "total reads mean max median"; }} if(/^\d/) {{ @a=@F; }} elsif(/^Total/) {{ print join(" ",$a[0], $a[11], $F[3], $F[10], $F[13]) }}' > {output}
+        faSize {input} |  perl -lane 'BEGIN {{ print "total reads mean max median"; }} if(/^\\d/) {{ @a=@F; }} elsif(/^Total/) {{ print join(" ",$a[0], $a[11], $F[3], $F[10], $F[13]) }}' > {output}
         """
 
 rule mapped_list:

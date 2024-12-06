@@ -95,7 +95,7 @@ rule pilon:
     shell:
         """
         java -Xmx20G -jar /opt/broad/pilon-1.21.jar --genome {input.fa} --outdir {output.dir} --changes --tracks --frags {input.bam} > {output.fa}.log
-        perl -lne 's/^(>.*)_pilon\s*$/$1/; print'  {output.dir}/pilon.fasta > {output.fa}
+        perl -lne 's/^(>.*)_pilon\\s*$/$1/; print'  {output.dir}/pilon.fasta > {output.fa}
         """
 
 rule pilon_unconfirmed:
@@ -140,7 +140,7 @@ rule quastShort:
         "{assembly}.quastShort"
     shell:
         """
-        perl -0777 -ne 'print "{wildcards.assembly} "; die unless /Total length \(>= 0 bp\)\s+(\d+)\s/; printf "Total %.1fM", $1/1e6; die unless /\# contigs \(>= 0 bp\)\s+(\d+)\s/; printf " contigs %d", $1; die unless /\# contigs \(>= 50000 bp\)\s+(\d+)\s/; printf " (%d >=50kb)", $1; die unless /Largest contig\s+(\d+)\s/; printf " longest %.0fkb", $1/1e3; die unless /N50\s+(\d+)\s/; printf " N50 %.0fkb", $1/1e3; die unless /\sGC \(\%\)\s+(\S+)\s/; printf " GC %.1f%%\n", $1; ' {input}  > {output}
+        perl -0777 -ne 'print "{wildcards.assembly} "; die unless /Total length \\(>= 0 bp\\)\\s+(\\d+)\\s/; printf "Total %.1fM", $1/1e6; die unless /\\# contigs \\(>= 0 bp\\)\\s+(\\d+)\\s/; printf " contigs %d", $1; die unless /\\# contigs \\(>= 50000 bp\\)\\s+(\\d+)\\s/; printf " (%d >=50kb)", $1; die unless /Largest contig\\s+(\\d+)\\s/; printf " longest %.0fkb", $1/1e3; die unless /N50\\s+(\\d+)\\s/; printf " N50 %.0fkb", $1/1e3; die unless /\\sGC \\(\\%\\)\\s+(\\S+)\\s/; printf " GC %.1f%%\\n", $1; ' {input}  > {output}
         """
 
 # chromosome sizes
@@ -151,7 +151,7 @@ rule sizes:
         "{assembly}.sizes"
     shell:
         """
-	faSize -detailed {input} > {output}
+        faSize -detailed {input} > {output}
         """
 
 # compare two assemblies via minimap, note ALN in the middle
@@ -198,10 +198,10 @@ rule blastn:
     shell:
         """
         makeblastdb -in {input.fa1} -dbtype nucl -out {output}.tmp
-	blastn -db {output}.tmp -query {input.fa2} -task blastn -outfmt "6 qaccver qlen qstart qend saccver slen sstart send nident pident bitscore evalue" {BLASTN_OPT} > {output}.tmp2
+        blastn -db {output}.tmp -query {input.fa2} -task blastn -outfmt "6 qaccver qlen qstart qend saccver slen sstart send nident pident bitscore evalue" {BLASTN_OPT} > {output}.tmp2
         rm {output}.tmp.n*
-	perl -lane '$F[2]--; ($s,$e)=@F[6,7]; $str=($s<=$e)?"+":"-"; if($str eq "-") {{ ($s,$e)=($e,$s); }} $s--; print join("\\t", $F[8], $str, @F[0,1,2,3,4,5], $s, $e, @F[9,10,11]);'  {output}.tmp2 | sort -k3,3 -k1gr > {output}
-	rm {output}.tmp2
+        perl -lane '$F[2]--; ($s,$e)=@F[6,7]; $str=($s<=$e)?"+":"-"; if($str eq "-") {{ ($s,$e)=($e,$s); }} $s--; print join("\\t", $F[8], $str, @F[0,1,2,3,4,5], $s, $e, @F[9,10,11]);'  {output}.tmp2 | sort -k3,3 -k1gr > {output}
+        rm {output}.tmp2
         """
 
 # output bed file for the first of the sequences compared by blast
@@ -212,8 +212,8 @@ rule blast2bed:
         "{name}.blast.bed"
     shell:
         """
-        perl -lane '$name="$F[2]:$F[4]-$F[5]:$F[10]"; print join("\t", @F[6,8,9], $name, @F[0,1])' {input} | sort -k1,1 -k2g > {output}
-	"""
+        perl -lane '$name="$F[2]:$F[4]-$F[5]:$F[10]"; print join("\\t", @F[6,8,9], $name, @F[0,1])' {input} | sort -k1,1 -k2g > {output}
+        """
 
 # create a pdf dotplot from a paf file
 rule minimap_pdf:
@@ -236,10 +236,10 @@ rule blastx:
     shell:
         """
         makeblastdb -in {input.fa1} -dbtype prot -out {output}.tmp
-	blastx -db {output}.tmp -query {input.fa2} -outfmt "6 qaccver qlen qstart qend saccver slen sstart send nident pident bitscore evalue" {BLASTN_OPT} > {output}.tmp2
+        blastx -db {output}.tmp -query {input.fa2} -outfmt "6 qaccver qlen qstart qend saccver slen sstart send nident pident bitscore evalue" {BLASTN_OPT} > {output}.tmp2
         rm {output}.tmp.p*
-	perl -lane '$F[6]--; ($s,$e)=@F[2,3]; $str=($s<=$e)?"+":"-"; if($str eq "-") {{ ($s,$e)=($e,$s); }} $s--; print join("\\t", $F[8], $str, @F[0,1], $s, $e, @F[4,5,6,7,9,10,11]);'  {output}.tmp2 | sort -k3,3 -k1gr > {output}
-	rm {output}.tmp2
+        perl -lane '$F[6]--; ($s,$e)=@F[2,3]; $str=($s<=$e)?"+":"-"; if($str eq "-") {{ ($s,$e)=($e,$s); }} $s--; print join("\\t", $F[8], $str, @F[0,1], $s, $e, @F[4,5,6,7,9,10,11]);'  {output}.tmp2 | sort -k3,3 -k1gr > {output}
+        rm {output}.tmp2
         """
 
 
@@ -252,7 +252,7 @@ rule minimap_view:
         "{aln}.paf.view"
     shell:
         """
-        perl -lane '$id=sprintf("%.1f", $F[9]*100/$F[10]); print join("\t", @F[9,4,0..3,5..8],$id)' {input} > {output}
+        perl -lane '$id=sprintf("%.1f", $F[9]*100/$F[10]); print join("\\t", @F[9,4,0..3,5..8],$id)' {input} > {output}
         """
 
 # create a more readable version of a paf.gz file
@@ -263,7 +263,7 @@ rule minimap_gz_view:
         "{aln}.paf.view"
     shell:
         """
-        zcat {input} | perl -lane '$id=sprintf("%.1f", $F[9]*100/$F[10]); print join("\t", @F[9,4,0..3,5..8],$id)' > {output}
+        zcat {input} | perl -lane '$id=sprintf("%.1f", $F[9]*100/$F[10]); print join("\\t", @F[9,4,0..3,5..8],$id)' > {output}
         """
 
 # nanopore aligned by minimap
@@ -275,7 +275,7 @@ rule Nanopore_minimap_bam:
     shell:
         """
         minimap2 -a -x map-ont --secondary=no {MINIMAP_OPT} {input.fa} {input.fastq} | samtools view -S -b - | samtools sort - -o {output.bam}
-    	samtools index {output.bam}
+        samtools index {output.bam}
         """
 
 # nanopore aligned by minimap for reads called nanopore.fastq.gz
@@ -287,7 +287,7 @@ rule Nanopore_minimap_bam2:
     shell:
         """
         minimap2 -a -x map-ont --secondary=no {MINIMAP_OPT} {input.fa} {input.fastq} | samtools view -S -b - | samtools sort - -o {output.bam}
-    	samtools index {output.bam}
+        samtools index {output.bam}
         """
 
 # nanopore aligned by minimap for reads called nanopore-sample.fastq.gz
@@ -299,7 +299,7 @@ rule Nanopore_minimap_bam_sample:
     shell:
         """
         minimap2 -a -x map-ont --secondary=no {MINIMAP_OPT} {input.fa} {input.fastq} | samtools view -S -b - | samtools sort - -o {output.bam}
-    	samtools index {output.bam}
+        samtools index {output.bam}
         """
 
 # create coverage from bam file (for illumina / nanopore / rnaseq coverage)
@@ -320,7 +320,7 @@ rule bedgraph_to_bw:
          "{genome}-{aln}.bw"
     shell:
         """
-	LC_COLLATE=C sort --buffer-size=1G -k1,1 -k2,2g {input.bedgraph} > {output}.tmp
+        LC_COLLATE=C sort --buffer-size=1G -k1,1 -k2,2g {input.bedgraph} > {output}.tmp
         bedGraphToBigWig {output}.tmp {input.sizes} {output}
         rm {output}.tmp
         """
@@ -329,16 +329,16 @@ rule bedgrap_to_lowcov:
     input:
          bedgraph="{name}.bedgraph"
     output:
-         r"{name}-low{mincov,\d+}.bed"
+         r"{name}-low{mincov,[0-9]+}.bed"
     shell:
         """
-	# get regions with coverage lower than {wildcards.mincov}
+        # get regions with coverage lower than {wildcards.mincov}
         perl -lane 'print if $F[3]<{wildcards.mincov}' {input} > {output}
         """
 
 rule bed_merge:
      input: "{name}.bed"
-     output:  r"{name}-merge4C{maxdist,\d+}.bed"
+     output:  r"{name}-merge4C{maxdist,[0-9]+}.bed"
      shell:
         """
         # merge regions with distance less than {wildcards.maxdist}
@@ -348,7 +348,7 @@ rule bed_merge:
 
 rule bed_minlen:
      input: "{name}.bed"
-     output:  r"{name}-minlen{minlen,\d+}.bed"
+     output:  r"{name}-minlen{minlen,[0-9]+}.bed"
      shell:
         """
         # keep only regions of length at least {wildcards.minlen}
@@ -395,7 +395,7 @@ rule Nanopore_minimap_paf_maxgap:
     input:
          fa="{genome}.fa", fastq="nanopore.fastq.gz"
     output:
-         paf="{genome}-maxgap{maxgap,\d+}-N.paf"
+         paf="{genome}-maxgap{maxgap,[0-9]+}-N.paf"
     shell:
         """
         minimap2 -c -x map-ont --secondary=no -r{wildcards.maxgap},{wildcards.maxgap} -g {wildcards.maxgap} {MINIMAP_OPT} {input.fa} {input.fastq} > {output.paf}
@@ -406,16 +406,13 @@ rule paf_view_cov:
     input:
          paf="{name}.paf.view", sizes="{name}.sizes"
     output:
-         bedgraph="{name}-trim{trim,\d+}.bedgraph"
+         bedgraph="{name}-trim{trim,[0-9]+}.bedgraph"
     shell:
         """
-	perl -lane '$t={wildcards.trim}; next unless $F[9]-$F[8]>2*$t; $F[8]+=$t; $F[9]-=$t; print join("\t", @F[6,8,9])' {input.paf} | sort --buffer-size=1G -k1,1 -k2g > {output}.tmp
-	bedtools genomecov -i {output}.tmp -bga -g {input.sizes} > {output}
-	rm {output}.tmp
+        perl -lane '$t={wildcards.trim}; next unless $F[9]-$F[8]>2*$t; $F[8]+=$t; $F[9]-=$t; print join("\\t", @F[6,8,9])' {input.paf} | sort --buffer-size=1G -k1,1 -k2g > {output}.tmp
+        bedtools genomecov -i {output}.tmp -bga -g {input.sizes} > {output}
+        rm {output}.tmp
         """
-
-
-
 
 # read connections between contigs
 rule Nanopore_connections:
@@ -426,11 +423,11 @@ rule Nanopore_connections:
     shell:
         """
         sort -k 3,3 -k5,5g {input.view} > {output}.tmp1
-        perl -lane 'die unless @F==11; if($o ne $F[2]) {{ $n=0; $o=$F[2]; }} if($F[1] eq "-") {{ @F[8,9]=@F[9,8]; }} print join("\t", $F[2]. "_" . $n, "R", @F[6,8,1]); print join("\t", $F[2]. "_" . ($n+1), "L", @F[6,9,1]); $n++;' {output}.tmp1 > {output}.tmp2
-	sort -k1,1 {output}.tmp2 > {output}.tmp3
+        perl -lane 'die unless @F==11; if($o ne $F[2]) {{ $n=0; $o=$F[2]; }} if($F[1] eq "-") {{ @F[8,9]=@F[9,8]; }} print join("\\t", $F[2]. "_" . $n, "R", @F[6,8,1]); print join("\\t", $F[2]. "_" . ($n+1), "L", @F[6,9,1]); $n++;' {output}.tmp1 > {output}.tmp2
+        sort -k1,1 {output}.tmp2 > {output}.tmp3
         join {output}.tmp3 {output}.tmp3  > {output}.tmp4
-	perl -lane 'die unless @F==9; if($F[1] eq "L" && $F[5] eq "R") {{ print  join("\t", @F[0,2,3,4,6,7,8]); }}' {output}.tmp4 > {output}
-	rm {output}.tmp[1234]
+        perl -lane 'die unless @F==9; if($F[1] eq "L" && $F[5] eq "R") {{ print  join("\\t", @F[0,2,3,4,6,7,8]); }}' {output}.tmp4 > {output}
+        rm {output}.tmp[1234]
         """
 
 
@@ -442,7 +439,7 @@ rule Nanopore_connections_size:
          "{name}-N.pairs{size}kb"  
     shell:
        """
-       perl -lane '$x={wildcards.size}*1000; $F[2]=int($F[2]/$x)*$x; $F[5]=int($F[5]/$x)*$x; print join("\t", @F[1..6])' {input} > {output}.tmp
+       perl -lane '$x={wildcards.size}*1000; $F[2]=int($F[2]/$x)*$x; $F[5]=int($F[5]/$x)*$x; print join("\\t", @F[1..6])' {input} > {output}.tmp
        sort {output}.tmp | uniq -c | sort -k1gr > {output}
        rm {output}.tmp
        """
@@ -459,8 +456,8 @@ rule atom_sequences:
     shell:
         """
         sort -k3,3 -k5,5g {input} > {output}.tmp1
-        perl -lane 'die unless @F==11; if(!defined $o || $o ne $F[2]) {{ printf "\n%s", $F[2]; $o=$F[2]; }} printf " %s%s", $F[6], $F[1]; END {{ print ""; }} ' {output}.tmp1 | grep . > {output}
-	rm {output}.tmp[1]
+        perl -lane 'die unless @F==11; if(!defined $o || $o ne $F[2]) {{ printf "\\n%s", $F[2]; $o=$F[2]; }} printf " %s%s", $F[6], $F[1]; END {{ print ""; }} ' {output}.tmp1 | grep . > {output}
+        rm {output}.tmp[1]
         """
 
 # run-length encoding of atom sequences
@@ -473,8 +470,17 @@ rule reduce_atom_sequences:
     shell:
         """
         perl -lane 'my @G; $o=""; push @F, "X"; foreach $f (@F) {{ if($f eq $o) {{ $n++; }} else {{ if($n>1) {{ $o.="X".$n; }} push @G, $o; $n=1; $o=$f; }} }}; print join(" ", @G);' {input} > {output}
-        """  
+        """
 
+rule revert_atom_sequences:
+    input:
+         "{name}.atoms"
+    output:
+         "{name}.atomsRC"
+    shell:
+        """
+        perl -lane '$n=shift @F; $n.="RC"; @F = reverse(@F); foreach $f (@F) {{if($f=~/\\+$/) {{$f=~s/\\+$/-/ or die; }} else {{ $f=~s/\\-$/+/ or die; }} }} print join(" ", $n, @F); ' {input} > {output}
+        """
 
 
 # stats on clipped nanopore reads
@@ -485,7 +491,7 @@ rule Nanopore_clipped_left:
          "{genome}-{reads}.clipL{size}.bed"
     shell:
         """
-        perl -lane 'die unless @F==11; if($F[1] eq "+") {{ $gap=$F[4];}} else {{ $gap=$F[3]-$F[5]; }} if($gap >= {wildcards.size}) {{ print join("\t", $F[6], $F[8], $F[8]+1, $F[2], $gap, $F[1]); }} ' {input.view} | sort -k1,1 -k2,2g > {output}
+        perl -lane 'die unless @F==11; if($F[1] eq "+") {{ $gap=$F[4];}} else {{ $gap=$F[3]-$F[5]; }} if($gap >= {wildcards.size}) {{ print join("\\t", $F[6], $F[8], $F[8]+1, $F[2], $gap, $F[1]); }} ' {input.view} | sort -k1,1 -k2,2g > {output}
         """
 
 # clipped nanopore reads
@@ -496,7 +502,7 @@ rule Nanopore_clipped_right:
          "{genome}-{reads}.clipR{size}.bed"
     shell:
         """
-        perl -lane 'die unless @F==11; if($F[1] eq "-") {{ $gap=$F[4];}} else {{ $gap=$F[3]-$F[5]; }} if($gap >= {wildcards.size}) {{ print join("\t", $F[6], $F[9], $F[9]+1, $F[2], $gap, $F[1]); }} ' {input.view} | sort -k1,1 -k2,2g > {output}
+        perl -lane 'die unless @F==11; if($F[1] eq "-") {{ $gap=$F[4];}} else {{ $gap=$F[3]-$F[5]; }} if($gap >= {wildcards.size}) {{ print join("\\t", $F[6], $F[9], $F[9]+1, $F[2], $gap, $F[1]); }} ' {input.view} | sort -k1,1 -k2,2g > {output}
         """
 
 # bed to bedgraph
@@ -516,7 +522,7 @@ rule cdhit_cluster:
     input:
          "{name}.fa"
     output:
-         fa="{name}-cl{id,[0-9\.]+}.fa",
+         fa="{name}-cl{id,[0-9.]+}.fa",
          clstr="{name}-cl{id}.fa.clstr",
     shell:
         """
@@ -533,14 +539,14 @@ rule cdhit_sizes:
          sizes="{name}.fa.clsizes"
     shell:
         """
-        perl -lane 'if(/^>/ && defined $n) {{ die unless defined $s; print "$s $n"; $n=0; $s=undef; }} elsif(/\*$/) {{ die unless />(.*)\s+\*$/; $s=$1; $s=~s/\.\.\.$//; $n++; }} else {{ $n++}} END {{  die unless defined $s; print "$s $n"; }}' < {input.clstr} > {output.sizes}
+        perl -lane 'if(/^>/ && defined $n) {{ die unless defined $s; print "$s $n"; $n=0; $s=undef; }} elsif(/\\*$/) {{ die unless />(.*)\\s+\\*$/; $s=$1; $s=~s/\\.\\.\\.$//; $n++; }} else {{ $n++}} END {{  die unless defined $s; print "$s $n"; }}' < {input.clstr} > {output.sizes}
         """
 
 
 rule cdhit_sizefilter:
     input:
          fa="{name}.fa",
-	 sizes="{name}.fa.clsizes"
+         sizes="{name}.fa.clsizes"
     output:
          fa="{name}-min{size,[0-9]+}.fa", sizes="{name}-min{size}.fa.clsizes",
     shell:
@@ -548,15 +554,15 @@ rule cdhit_sizefilter:
         # get big cluster reps
         perl -lane 'die unless @F==2; if($F[1]>={wildcards.size}) {{ print }}' {input.sizes} > {output.sizes}
         # format for grep
-	perl -lane 'print ">$F[0]"' < {output.sizes} > {output.fa}.tmp1
+        perl -lane 'print ">$F[0]"' < {output.sizes} > {output.fa}.tmp1
         # get names from fa for grep
         grep ">" {input.fa} > {output.fa}.tmp2
         # find selected names
         grep -F -f {output.fa}.tmp1 {output.fa}.tmp2 | perl -lne 's/>//; print' > {output.fa}.tmp3
         # get full fasta records
-	faSomeRecords {input.fa} {output.fa}.tmp3 {output.fa}
+        faSomeRecords {input.fa} {output.fa}.tmp3 {output.fa}
         rm {output.fa}.tmp[123]
-	"""
+        """
 
 
 rule nanopore_sample:
@@ -656,8 +662,8 @@ rule chain:
         "{name}.chain"
     shell:
         """
-	pslToChain {input} {output}
-	"""
+        pslToChain {input} {output}
+        """
 
 rule psl_png:
     input:
@@ -666,8 +672,8 @@ rule psl_png:
         "{name}.psl.tab.png"
     shell:
         """
-	last-dotplot {input} {output}
-	"""
+        last-dotplot {input} {output}
+        """
 
 rule psl_view:
     input:
@@ -676,9 +682,9 @@ rule psl_view:
         view="{name}.psl.view", view2="{name}.psl.view2"
     shell:
         """
-        perl -lane 'next unless /^[0-9]/; $g=$F[0]+$F[2]; $b=$F[1]+$F[3]+$F[5]+$F[7]; $s=sprintf "%.1f", 100*$g/($g+$b); print join("\t", @F[0..16], $s)' {input} > {output.view}
-        perl -lane 'print join("\t", @F[0,8..17])' {output.view} > {output.view2}
-	"""
+        perl -lane 'next unless /^[0-9]/; $g=$F[0]+$F[2]; $b=$F[1]+$F[3]+$F[5]+$F[7]; $s=sprintf "%.1f", 100*$g/($g+$b); print join("\\t", @F[0..16], $s)' {input} > {output.view}
+        perl -lane 'print join("\\t", @F[0,8..17])' {output.view} > {output.view2}
+        """
 
 
 # e.g. _l100_id90 requires length 100 and id 90%, similarly 300_70
@@ -689,7 +695,7 @@ rule psl_filter:
         "{name}_l{length}_id{id}.psl"
     shell:
         """
-	perl -lane 'die unless @F==21; next if $F[12]-$F[11]<{wildcards.length} || $F[16]-$F[15]<{wildcards.length} || ($F[0]+$F[2])<({wildcards.id}/100)*($F[0]+$F[1]+$F[2]+$F[3]+$F[5]+$F[7]); print' {input} > {output}
+        perl -lane 'die unless @F==21; next if $F[12]-$F[11]<{wildcards.length} || $F[16]-$F[15]<{wildcards.length} || ($F[0]+$F[2])<({wildcards.id}/100)*($F[0]+$F[1]+$F[2]+$F[3]+$F[5]+$F[7]); print' {input} > {output}
         """
 
 rule freebayes:
@@ -743,7 +749,7 @@ rule vcf_apply_alt_only:
     shell: """
         bcftools view --include 'GT="1/1" || GT="1/2"' {input.vcf} | bgzip -c > {output.vcf}
         bcftools index -t {output.vcf}
-	bcftools consensus -H 1 -f {input.fa} {output.vcf} > {output.fa}
+        bcftools consensus -H 1 -f {input.fa} {output.vcf} > {output.fa}
     """
 
 # create two haplotypes
@@ -811,7 +817,7 @@ rule kmer_bedgraph:
       """
       {SCRIPT_PATH}/find_kmers.pl 21 < {input} | sort --buffer-size=1G | uniq -c > {output}.tmp1
       {SCRIPT_PATH}/find_kmers.pl -b 21 < {input} | sort --buffer-size=1G -k4 > {output}.tmp2
-      join -1 2 -2 4 {output}.tmp1 {output}.tmp2 | perl -lane 'print join("\t", @F[2,3,4,1])' | sort --buffer-size=1G -k1,1 -k2,2g > {output}
+      join -1 2 -2 4 {output}.tmp1 {output}.tmp2 | perl -lane 'print join("\\t", @F[2,3,4,1])' | sort --buffer-size=1G -k1,1 -k2,2g > {output}
       rm {output}.tmp1 {output}.tmp2
       """
 
@@ -834,7 +840,7 @@ rule smooth_bedgraph:
      shell:
        """
        bedtools map -b {input.bg} -a {input.bed} -c 4 -o median > {output}.tmp
-       perl -lane '$h=int(($F[2]+$F[1])/2); print join("\t", $F[0], $h, $h+1, $F[3]);' {output}.tmp > {output}
+       perl -lane '$h=int(($F[2]+$F[1])/2); print join("\\t", $F[0], $h, $h+1, $F[3]);' {output}.tmp > {output}
        rm {output}.tmp
        """
 
@@ -863,7 +869,7 @@ rule nanoplot:
      input: "{name}-N.fastq.gz"
      output:
         dir=directory("{name}-N.len{size}.plot"),
-	txt="{name}-N.len{size}.plot.txt"
+        txt="{name}-N.len{size}.plot.txt"
      shell:
         """
         NanoPlot --fastq {input} --maxlength {wildcards.size} -o {output.dir}
@@ -885,6 +891,6 @@ rule rrna:
         cmsearch --cpu 1 --tblout {output}-tmp-5_8s.tbl {output}-tmp-5_8s.cm {input} > {output}-tmp
         cmsearch --cpu 1 --tblout {output}-tmp-5s.tbl {output}-tmp-5s.cm {input} > {output}-tmp
         cat {output}-tmp-lsu.tbl {output}-tmp-ssu.tbl {output}-tmp-5_8s.tbl {output}-tmp-5s.tbl > {output}-tmp.tbl
-        grep -v '#' {output}-tmp.tbl | perl -lane '@F[7,8]=@F[8,7] if $F[7]>$F[8]; print join("\t", @F[0,7,8,2,15,9])' | sort -k1,1 -k2,2g > {output}
+        grep -v '#' {output}-tmp.tbl | perl -lane '@F[7,8]=@F[8,7] if $F[7]>$F[8]; print join("\\t", @F[0,7,8,2,15,9])' | sort -k1,1 -k2,2g > {output}
         rm {output}-tmp-lsu.cm {output}-tmp-ssu.cm {output}-tmp-5_8s.cm {output}-tmp-5s.cm {output}-tmp {output}-tmp-lsu.tbl {output}-tmp-ssu.tbl {output}-tmp-5_8s.tbl {output}-tmp-5s.tbl {output}-tmp.tbl
         """

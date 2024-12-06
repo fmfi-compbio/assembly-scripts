@@ -108,7 +108,7 @@ rule transcripts_exons:
         """
 	pslToBed {input} {params.tmp_bed}
         # make names unique
-	perl -lane '$F[3] .= "_" . $.; print join("\t", @F)' {params.tmp_bed} > {params.tmp2_bed}
+	perl -lane '$F[3] .= "_" . $.; print join("\\t", @F)' {params.tmp_bed} > {params.tmp2_bed}
         bedToGenePred {params.tmp2_bed} {params.tmp_gp}
         genePredToGtf file {params.tmp_gp} {params.tmp_gtf} 
         # we get strange gtf incl. start/stop...
@@ -416,7 +416,7 @@ rule miniprot:
 	miniprot -G{MAX_INTRON} {MINIPROT_OPT} --gtf {input.fa} {input.faa} > {output}
         """
 
-# miniprot prodicing gff3 for later conversion to gp
+# miniprot producing gff3 for later conversion to gp
 rule miniprot2:
     input:
         fa="genome.fa", faa="{name}-prot.fa"
@@ -425,7 +425,7 @@ rule miniprot2:
     shell:
         """
 	miniprot -G{MAX_INTRON} {MINIPROT_OPT} --gff {input.fa} {input.faa} > {output}.tmp
-	perl -lne 'next if /^##PAF/; if(/ID=(\w+);/) {{ $o=$1; die "target $_" unless /Target=(\S+)\s/; $n=$1; if(exists $rev{{$n}}) {{ $i=2; while(exists $rev{{"${{n}}_c$i"}}) {{ $i++; }} $n="${{n}}_c$i"; }} $rev{{$n}}=$o; $fwd{{$o}} = $n; s/ID=$o/ID=$n/ or die "sub1 $_"; }} elsif (/Parent=(\w+);/) {{ $o=$1; die "unknown $_" unless exists $fwd{{$o}}; $n=$fwd{{$o}}; s/Parent=$o/Parent=$n/ or die "sub2 $_"; }} s/Rank=/rank=/g; s/Identity=/identity=/g; s/Positive=/positive=/g; s/Frameshift=/frameshift=/g; s/StopCodon=/stopcodon=/g; s/Donor=/donor=/g; s/Acceptor=/acceptor=/g; print' {output}.tmp > {output}
+	perl -lne 'next if /^##PAF/; if(/ID=(\\w+);/) {{ $o=$1; die "target $_" unless /Target=(\\S+)\\s/; $n=$1; if(exists $rev{{$n}}) {{ $i=2; while(exists $rev{{"${{n}}_c$i"}}) {{ $i++; }} $n="${{n}}_c$i"; }} $rev{{$n}}=$o; $fwd{{$o}} = $n; s/ID=$o/ID=$n/ or die "sub1 $_"; }} elsif (/Parent=(\\w+);/) {{ $o=$1; die "unknown $_" unless exists $fwd{{$o}}; $n=$fwd{{$o}}; s/Parent=$o/Parent=$n/ or die "sub2 $_"; }} s/Rank=/rank=/g; s/Identity=/identity=/g; s/Positive=/positive=/g; s/Frameshift=/frameshift=/g; s/StopCodon=/stopcodon=/g; s/Donor=/donor=/g; s/Acceptor=/acceptor=/g; print' {output}.tmp > {output}
 	rm {output}.tmp
         """
 
@@ -495,6 +495,6 @@ rule blast_table:
       perl -lane 'print $F[2]' {input} | sort | uniq -c | sort -k2 > {output}.tmp
       sort -k3,3 {input} > {output}.tmp2
       join -1 2 -2 3 {output}.tmp {output}.tmp2 | perl -lane 'print join("\t", @F[7,8,0], join(";", @F[4,2,1]))' | sort > {output}.tmp3
-      perl -lane 'if($.==1 || $F[0] ne $o) {{ print "" if $.>1; printf "%s\t\%d", $F[0], $F[1]; }} printf "\t%s\t%s", $F[2], $F[3]; $o=$F[0]; END {{ print "" }} ' {output}.tmp3 > {output}
+      perl -lane 'if($.==1 || $F[0] ne $o) {{ print "" if $.>1; printf "%s\\t\\%d", $F[0], $F[1]; }} printf "\\t%s\\t%s", $F[2], $F[3]; $o=$F[0]; END {{ print "" }} ' {output}.tmp3 > {output}
       rm {output}.tmp {output}.tmp2 {output}.tmp3
      """ 

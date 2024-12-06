@@ -1,3 +1,4 @@
 #! /usr/bin/bash
-echo snakemake -s /opt/assembly-scripts/assembly.smk "$@"
-snakemake -s /opt/assembly-scripts/assembly.smk -p "$@"
+echo snakemake -s /opt/assembly-scripts/assembly.smk -p -c 1 "$@"
+# option -c 1 can be overriden in the argument
+snakemake -s /opt/assembly-scripts/assembly.smk -p -c 1 "$@"
