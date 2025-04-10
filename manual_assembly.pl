@@ -112,7 +112,7 @@ if(defined $joins_file) {
 }
 
 # get regions
-my_run("bedtools getfasta -fi $dir/tmp1.fa -bed $dir/regions.bed -s -name | perl -ne 's/\\([+-]\\)\$//; print' >$dir/tmp2.fa");
+my_run("bedtools getfasta -fi $dir/tmp1.fa -bed $dir/regions.bed -s -nameOnly | perl -ne 's/\\([+-]\\)\$//; print' >$dir/tmp2.fa");
 # remove fasta header from _CONT regions
 my_run("grep -v '>.*_CONT\$' $dir/tmp2.fa > $dir/tmp3.fa");
 my_run("fastareformat $dir/tmp3.fa");  # to stdout
