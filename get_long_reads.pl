@@ -8,9 +8,11 @@ use Data::Dumper;
 
 #my $BIN = "/projects2/dipMag/bin";
 
-my $USAGE = "$0 [-f] [-r] contig coord sign max_gap min_aln min_free len_free len_aln < psl > bed
+my $USAGE = "$0 [-v] [-f] [-r] contig coord sign max_gap min_aln min_free len_free len_aln < psl > bed
 
 -f Input is paf format, not psl
+
+-v Input is paf.view, not psl
 
 -r reverse strand in bed file, useful in telomeres
 
@@ -45,7 +47,7 @@ $0 -f tig00000001 811281 - 500 2000 1000 1000 1000 < nanopore-mapped.paf > reads
     ";
 
 my %Options;
-getopts('fr', \%Options);
+getopts('fvr', \%Options);
 
 die $USAGE  unless @ARGV==8;
 my ($contig, $coord, $sign, $max_gap, $min_aln, 
@@ -62,6 +64,8 @@ while(my $line = <STDIN>) {
 
     if(exists $Options{'f'}) {
 	$rec = parse_paf_line($line);
+    } elsif(exists $Options{'v'}) {
+	$rec = parse_pafview_line($line);
     } else {
 	$rec = parse_psl_line($line);
     }
@@ -130,36 +134,47 @@ while(my $line = <STDIN>) {
 
 exit 0;
 
-sub parse_psl_line {
-    my ($line) = @_;
+
+sub parse_format_line {
+    my ($line, $keys) = @_;
+
     my @parts = split " ", $line;
     return undef if @parts==0;
 
+    die unless scalar(@parts)==scalar(@$keys);
+    
+    my %rec;
+    @rec{@$keys} = @parts;
+    return \%rec;
+}
+
+sub parse_psl_line {
+    my ($line) = @_;
+    
     my @psl_keys = qw/matches misMatches repMatches nCount qNumInsert
     qBaseInsert tNumInsert tBaseInsert strand qName qSize qStart qEnd
     tName tSize tStart tEnd blockCount blockSizes qStarts tStarts/; 
-    die unless scalar(@parts)==scalar(@psl_keys);
-    
-    my %rec;
-    @rec{@psl_keys} = @parts;
-    return \%rec;
+
+    return parse_format_line($line, \@psl_keys);
 }
 
 sub parse_paf_line {
     my ($line) = @_;
-    my @parts = split " ", $line;
-    return undef if @parts==0;
 
     my @paf_keys = qw/qName qSize qStart qEnd strand tName tSize
     tStart tEnd matches alnLen quality/;
-    
-    die unless scalar(@parts)>=scalar(@paf_keys);
-    
-    my %rec;
-    @rec{@paf_keys} = @parts;
-    return \%rec;
+
+    return parse_format_line($line, \@paf_keys);
 }
 
+sub parse_pafview_line {
+    my ($line) = @_;
+
+    my @pafview_keys = qw/matches strand qName qSize qStart qEnd tName tSize
+    tStart tEnd pid/;
+
+    return parse_format_line($line, \@pafview_keys);
+}
 
 
 sub move_left {
