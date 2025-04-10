@@ -403,6 +403,31 @@ rule augustus_train:
         export AUGUSTUS_CONFIG_PATH=`pwd`/{output}/config ;{AUGUSTUS_DIR}/bin/etraining --species=$SP $DATA &> {output}.log
 	"""
 
+# convert Uniprot orig fasta to version with just middle id
+rule uniprot2simplify:
+    input:
+        fa="{name}UniprotOrig-prot.fa"
+    output:
+        fa="{name}Uniprot-prot.fa"
+    shell:
+        """
+	perl -lne 'if(/>/) {{ s/>\\S+\\|(\\S+)\\|\\S+ />$1 / or die; }} print' {input.fa} > {output.fa}
+	"""
+
+
+# convert uniprot fasta to fasta with gene names
+#  commas in gene names will be changed to __
+#  also non-unique gene names will get suffix __2, __3 etc 
+rule uniprot2genes:
+    input:
+        fa="{name}Uniprot-prot.fa"
+    output:
+        fa="{name}Genes-prot.fa"
+    shell:
+        """
+	perl -lne 'if(/>/) {{ s/>(.*) GN=(\\S+)\s.*$/>$2/ or die; s/,/__/g; $c=2; $n=$_; while($seen{{$n}}) {{ $n=$_ . "__$c"; $c++; }}; $seen{{$n}}++; $_ = $n; }} print' {input.fa} > {output.fa}
+	"""
+
 
 # align proteins by miniprot
 # gtf should be sorted in the same order as genome.fa
@@ -498,3 +523,29 @@ rule blast_table:
       perl -lane 'if($.==1 || $F[0] ne $o) {{ print "" if $.>1; printf "%s\\t\\%d", $F[0], $F[1]; }} printf "\\t%s\\t%s", $F[2], $F[3]; $o=$F[0]; END {{ print "" }} ' {output}.tmp3 > {output}
       rm {output}.tmp {output}.tmp2 {output}.tmp3
      """ 
+
+# from paf.view alignment file in which special sequences of interest
+# were used as db and genome as query
+# create a bed file containing name of special sequence
+# togther with % coverage and  %id; number of matches are used as score
+rule paf_view_bed:
+    input: "{name}.paf.view"
+    output: "{name}.paf.bed"
+    shell:
+      """
+      perl -lane '$cov=sprintf "%.1f", ($F[9]-$F[8])*100/$F[7]; $n=join("_", $F[6], "cov".$cov, "id".$F[10]); print join("\t", @F[2,3,4,0,1], $n)' {input} > {output}
+      """
+
+
+# find tandem repeats by tantan
+# with a given max length
+rule tantan:
+    input: "genome.fa"
+    output: bed="tantan-max{max}.bed", txt="tantan-max{max}.txt"
+    shell:
+      """
+      tantan -f 4 -w {wildcards.max} {input}  > {output.txt}
+      # the columns are 0:chr, 1:start, 2:end (BED-style),
+      # 3:repeat_length, 4:number of repetitions, motif, occurrences
+      perl -lane 'print join("\t", @F[0..2], "rep$._$F[3]_$F[4]")' {output.txt} > {output.bed}
+      """
