@@ -460,6 +460,19 @@ rule atom_sequences:
         rm {output}.tmp[1]
         """
 
+# gaps between atoms
+rule atom_gaps:
+    input:
+         "{name}.paf.view"
+    output:
+         "{name}.atomGaps"
+    shell:
+        """
+        sort -k3,3 -k5,5g {input} > {output}.tmp1
+        perl -lane 'die unless @F==11; if(!defined $o || $o ne $F[2]) {{ if(defined $g) {{ printf " %d\\n", $g; }} printf "%s", $F[2]; $o=$F[2]; $e=0; }} printf " %d %s%s", $F[4]-$e, $F[6], $F[1]; $e=$F[5]; $g=$F[3]-$F[5]; END {{ print " $g"; }} ' {output}.tmp1  > {output}
+        rm {output}.tmp[1]
+        """
+
 # run-length encoding of atom sequences
 # for easier analysis of tandem repeats
 rule reduce_atom_sequences:
@@ -472,6 +485,8 @@ rule reduce_atom_sequences:
         perl -lane 'my @G; $o=""; push @F, "X"; foreach $f (@F) {{ if($f eq $o) {{ $n++; }} else {{ if($n>1) {{ $o.="X".$n; }} push @G, $o; $n=1; $o=$f; }} }}; print join(" ", @G);' {input} > {output}
         """
 
+# reverting atom sequences can be used
+# for normalizing them to one direction
 rule revert_atom_sequences:
     input:
          "{name}.atoms"
