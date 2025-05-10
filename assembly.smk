@@ -909,3 +909,22 @@ rule rrna:
         grep -v '#' {output}-tmp.tbl | perl -lane '@F[7,8]=@F[8,7] if $F[7]>$F[8]; print join("\\t", @F[0,7,8,2,15,9])' | sort -k1,1 -k2,2g > {output}
         rm {output}-tmp-lsu.cm {output}-tmp-ssu.cm {output}-tmp-5_8s.cm {output}-tmp-5s.cm {output}-tmp {output}-tmp-lsu.tbl {output}-tmp-ssu.tbl {output}-tmp-5_8s.tbl {output}-tmp-5s.tbl {output}-tmp.tbl
         """
+
+# create a multiple alignment
+rule mafft:
+  input: "{name}.fa"
+  output: "{name}.mfa"
+  shell:
+    """
+    mafft {input} > {output}
+    """
+    
+rule consensus:
+  input: "{name}.mfa"
+  output: "{name}-cons.fa"
+  shell:
+    """
+    hmmbuild {output}.tmp.hmm {input}
+    hmmemit -c {output}.tmp.hmm > {output}
+    rm {output}.tmp.hmm
+    """
