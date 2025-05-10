@@ -533,7 +533,7 @@ rule paf_view_bed:
     output: "{name}.paf.bed"
     shell:
       """
-      perl -lane '$cov=sprintf "%.1f", ($F[9]-$F[8])*100/$F[7]; $n=join("_", $F[6], "cov".$cov, "id".$F[10]); print join("\t", @F[2,3,4,0,1], $n)' {input} > {output}
+      perl -lane '$cov=sprintf "%.1f", ($F[9]-$F[8])*100/$F[7]; $n=join("_", $F[6], "cov".$cov, "id".$F[10]); print join("\t", @F[2,4,5],$n,@F[0,1])' {input} > {output}
       """
 
 
