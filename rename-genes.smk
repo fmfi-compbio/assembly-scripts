@@ -94,7 +94,7 @@ rule rename_genes:
 
 rule manual_annot:
   input: tsv="{name}-manual.tsv", gpNew="{name}-manual-new.gp", gpOld="{name}-manual-old.gp"
-  output: gp="{name}-manual.gp", log="{name}-manual.log", gtf="{name}-manual.gtf"
+  output: gp="{name}-manual.gp", log="{name}-manual.log"
   shell:
     """
     # check that tsv has no repeated IDs in columns with genes to be removed, added
@@ -111,9 +111,6 @@ rule manual_annot:
     # join the two files
     cat {output.gp}.tmp-add.gp {output.gp}.tmp-remain.gp | sort -k 2,2 -k4,4g > {output.gp}
     
-    # make gtf
-    genePredToGtf -honorCdsStat file {output.gp} {output.gtf}
-
     # check that transcript IDs are unique
     perl -lane 'print $F[0]' {output.gp} | sort | uniq -c | perl -lane 'die "duplicated id $_" if $F[0]>1'
     # make sure that transcript id and gene id different 
@@ -146,4 +143,48 @@ rule manual_annot:
 
     rm {output.gp}.tmp-add.list {output.gp}.tmp-add.gp {output.gp}.tmp-remove.list {output.gp}.tmp-remain.gp
     head -n 30 {output.log}
+    """
+
+rule manual_gtf:
+  input: gp="{name}-manual.gp"
+  output: gtf="{name}-manual.gtf"
+  shell:
+    """
+    genePredToGtf -honorCdsStat file {input.gp} {output.gtf}
+    """
+
+rule manual_prot:
+  input: gtf="{name}-manual.gtf", fa="genome.fa"
+  output: prot="{name}-manual-prot.fa", cdna="{name}-manual-cdna.fa", log="{name}-manual-prot.fa.log"
+  params:
+    mtDNA = config.get("mtDNA", "mtDNA"),
+    nucl_code = config["nucl_code"],
+    mt_code = config["mt_code"]
+  shell:
+    """
+    perl -lane 'print if ($F[0] eq "{params.mtDNA}")' {input.gtf} > {output.prot}.tmp.mt.gtf
+    perl -lane 'print unless ($F[0] eq "{params.mtDNA}")' {input.gtf} > {output.prot}.tmp.nucl.gtf
+    {SCRIPT_PATH}/gtf2transcript.pl -c -s -S -g {params.mt_code} {input.fa} {output.prot}.tmp.mt.gtf -10 0 {output.prot}.tmp.mt.cdna {output.prot}.tmp.mt.prot
+    {SCRIPT_PATH}/gtf2transcript.pl -c -s -S -g {params.nucl_code} {input.fa} {output.prot}.tmp.nucl.gtf -10 0 {output.prot}.tmp.nucl.cdna {output.prot}.tmp.nucl.prot
+    cat {output.prot}.tmp.nucl.cdna {output.prot}.tmp.mt.cdna > {output.cdna}
+    cat {output.prot}.tmp.nucl.prot {output.prot}.tmp.mt.prot > {output.prot}
+    echo "Counts of nucl. and mt. genes:" > {output.log}
+    grep -c '>' {output.prot}.tmp.nucl.cdna {output.prot}.tmp.mt.cdna >> {output.log} || true
+    echo "In frame stop codons:" >> {output.log}
+    grep -E '>|\*' {output.prot}  | grep -v '>' -B 1 | grep '>' | perl -lne 's/>//; print' | sort >> {output.log} || true
+    head -n 30 {output.log}
+
+    rm {output.prot}.tmp.nucl.cdna  {output.prot}.tmp.mt.cdna {output.prot}.tmp.nucl.prot {output.prot}.tmp.mt.prot {output.prot}.tmp.mt.gtf {output.prot}.tmp.nucl.gtf
+    """
+
+rule manual_gff3:
+  input: gtf="{name}-manual.gtf"
+  output: gff3="{name}-manual.gff3"
+  shell:
+    """
+    # add stop codons to CDS
+    {SCRIPT_PATH}/stop2CDS.pl {input.gtf} > {output.gff3}.tmp
+    # convert to gff3
+    {MAKER_PATH}/genemark_gtf2gff3 {output.gff3}.tmp > {output.gff3}
+    rm {output.gff3}.tmp
     """

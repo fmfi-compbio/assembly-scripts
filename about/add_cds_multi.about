@@ -1,0 +1,23 @@
+option gtf_input_file INPUT
+filter read_gtf
+
+filter compute_coverage
+
+# add CDS rows with frame, if possible
+# discard other transcripts
+option find_longest_ORF true
+option minimum_ORF_length 30
+option suboptimal_ORF_fraction FRACTION1
+option incomplete_extension_fraction FRACTION2
+filter add_CDS
+filter add_strand
+
+filter add_start_codon
+filter add_stop_codon
+
+filter compute_coverage
+
+#filtered version of the gtf
+option gtf_output_file OUTPUT
+filter write_gtf
+

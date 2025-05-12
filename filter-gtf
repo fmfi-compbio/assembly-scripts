@@ -2268,45 +2268,87 @@ sub init_add_CDS
     initialize_option($options, "minimum_ORF_length", 0, "nonnegative number");
 
     initialize_option($options, "stop_codons", "TAA TAG TGA"); 
-    initialize_option($options, "start_codons", "ATG"); 
+    initialize_option($options, "start_codons", "ATG");
+    
+    # >1 for no suboptimal, 1 means all optimal e.g. longest
+    # 0.5 means all within 50% of longest, 0 means all above min len
+    # for a single stop codon only the longest orf is reported
+    # or a pair longest incomplete and longest starting with a start codon.
+    # Only works for find_longest_ORF=true
+    initialize_option($options, "suboptimal_ORF_fraction",
+		      2, "nonnegative number");
+
+    # keep 5' incomplete only if either no complete version
+    # or incomplete longer from complete at least by the fraction.
+    # For 0 keep all, fraction can be greater than 1.
+    # Only works for find_longest_ORF=true
+    initialize_option($options, "incomplete_extension_fraction",
+		      0, "nonnegative number");
+
 }
 
 
-sub find_longest_orf
+sub find_frame_orfs
 {
     my ($seq, $frame, $options) = @_;
-    #find the longest orf in the sequence in frame $frame
+    #find all sufficiently long orfs in the sequence in frame $frame
     #ORF must start with a start codon and end with stop codon
     # and it does not have any in-frame stop codon in the middle.
     #It may be incomplete (extends beyond transcript boundary).
-    #Return the number of nucl. to skip at the beginning,
+    #Return two paralle lists, one with the number of nucl. to skip at the beginning,
     #and the length of the ORF, including the last stop codon (if any)
 
     my $n = length($seq);
     my $codons = POSIX::floor(($n-$frame)/3);
     
-    my $skip;
-    my $max_len = 0;
+    my @skips;
+    my @lengths;
+    my $was_start = 0;    # was previous ORF complete (with the same stop)
+    my $complete_len = 0; # length of previous complete ORF
 
     # go from last codon to the first 
     #and check distance from each start to nearest stop
     my $last_stop = $frame + ($codons-1)*3;  # end of sequence (start of last codon)
     for(my $pos = $frame + ($codons-1)*3;  
 	$pos>=$frame; $pos-=3) {
+	my $is_start = is_start_codon(substr($seq, $pos, 3), $options->{'start_codons'});
+
 	if(is_stop_codon(substr($seq, $pos, 3), $options->{'stop_codons'})) {
 	    $last_stop = $pos;
+	    $was_start = 0;
+	    $complete_len = 0;
 	}
-	elsif(is_start_codon(substr($seq, $pos, 3), $options->{'start_codons'}) 
-	      || $pos == $frame) {
+	elsif($is_start || $pos == $frame) {  #start codon or start of reading frame
 	    my $len = $last_stop-$pos+3;
-	    if($len > $max_len) {
-		$max_len = $len;
-		$skip = $pos;
+	    if($len < $options->{"minimum_ORF_length"}) {
+		next;  # skip short orfs
 	    }
+	    
+	    if(! $is_start) {
+		# incomplete should be sufficently longer than previous complete (if any)
+		my $target = $complete_len * (1+$options->{'incomplete_extension_fraction'});
+		if($len < $target) {
+		    next; 
+		}
+	    }
+	    
+	    if($is_start && $was_start) {
+		# remove last entry in arrays
+		# - 2 complete orfs with the same end only longer is kept
+		pop @skips;
+		pop @lengths
+	    }
+	    
+	    # a new entry
+	    push @skips, $pos;
+	    push @lengths, $len;
+	    
+	    $was_start = $is_start;
+	    $complete_len = $len;
 	}
     }
 
-    return ($skip, $max_len);
+    return (\@skips, \@lengths);
 }
 
 
@@ -2501,33 +2543,60 @@ sub exec_add_CDS
 	my @strands = valid_strands($transcript);
 
 	my $CDS;        # ref. to list of CDS exons in the result
-	my $found = 0;  # was a good ORF found? 
-
+	my $found = 0;
+	
 	if($options->{"find_longest_ORF"} eq "true") {
-	    my $max_len = 0;
-
+	    my @candidates;  # list of pairs length, lists of exons
+	    
 	    foreach my $strand (@strands) {
 		my $seq = extract_transcript_sequence(\@exons, 
 						      $strand, $fasta);
 		
 		foreach my $frame (0..2) {
-		    my ($skip, $len) = find_longest_orf($seq, $frame, $options);
+		    my ($skips, $cur_lengths, $cur_max_len) = find_frame_orfs($seq, $frame, $options);
 		    
-		    if($len > $max_len && $len > $options->{"minimum_ORF_length"}) {
-			#longer orf than found so far
+		    for(my $i=0; $i<@$skips; $i++) {
+			my $skip = $skips->[$i];
+			my $len = $cur_lengths->[$i];
 
 			#some checks
 			die unless $skip>=0 && $len>0 && $len%3==0
 			    && $skip+$len<=length($seq)
 			    && defined find_orf(substr($seq, $skip, $len),0,$options);
 
-			$CDS = restrict_transcript(\@exons, $strand, 
-						   $skip, $len, 0);
-			$max_len = $len;
-			$found = 1;
-		    }
+			my $cur_CDS = restrict_transcript(\@exons, $strand, 
+							   $skip, $len, 0);
+
+			push @candidates, [$len, $cur_CDS];
+		    } # for $i in skips
 		} # for each frame
-	    } # for each strand	  
+	    } # for each strand
+
+	    $found = @candidates>0;
+	    $CDS = [];
+	    
+	    # now filter the candidates based on length
+	    # One of the longest keeps orig transcript_id, the rest gest new IDs
+	    # extended with ORF and length
+	    if($found) {
+		@candidates = sort { $b->[0] <=> $a->[0] } @candidates;
+		my $max_len = $candidates[0][0];
+		my $target_len =  $max_len * $options->{"suboptimal_ORF_fraction"};
+		for(my $i=0; $i<@candidates; $i++) {
+		    if($i==0 || $candidates[$i][0] >= $target_len) {
+			my $cur_exons = $candidates[$i][1];
+			if($i>0) {  # rename all transcripts except for the first
+			    die unless @$cur_exons>0;
+			    my $id = $cur_exons->[0]->{"transcript_id"} . "_orf_$i";
+			    foreach my $exon (@$cur_exons) {
+				$exon->{"transcript_id"} = $id;
+			    }
+			}
+			push @$CDS, @{$cur_exons};
+		    }
+		}
+	    }
+	    
 	}
 	else {  # find_longest_orf = false
 	
@@ -2577,8 +2646,8 @@ sub exec_add_CDS
 	    foreach my $exon (@$transcript) {
 		$exon->{'status'} = 'bad';
 	    }
-	}
-    }
+	} 
+    }  # for each transcript
 
     if($options->{"find_longest_ORF"} eq "false") {
 	printf STDERR " (%d no transcript_id, %d no frame, %d >1 frames) ",

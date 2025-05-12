@@ -127,6 +127,26 @@ rule transcripts_orfs:
 	gtfToGenePred -genePredExt {input} {output}
         """
 
+# no utrs, multiple orfs up to {value} of longest
+# e.g. for value=0.75, 75% of longest
+# identical ORFs clustered, all is renumbered
+rule transcripts_orfs_multi:
+    input:
+       "{rnaseq}_tr-CDS_multi{value}.gtf"
+    output:
+       "{rnaseq}_tr_orfs_multi{value}.gp"
+    shell:
+        """
+	# skip UTR
+	perl -lane 'print if $F[2]=~/^(CDS|start_codon|stop_codon)$/' {input} > {output}.tmp.gtf
+	# convert to gene pred
+	gtfToGenePred -genePredExt {output}.tmp.gtf {output}.tmp.gp
+	perl -lane '$F[0]="XYZ"; $F[11]="XYZ"; print join("\t", @F)' {output}.tmp.gp > {output}.tmp2.gp
+	sort -k2,2 -k4,4g -k3 {output}.tmp2.gp | uniq > {output}.tmp3.gp
+	perl -lane '$F[0]="orf$."; $F[11]="orf$."; print join("\t", @F)' {output}.tmp3.gp > {output}
+	rm {output}.tmp.gp {output}.tmp2.gp {output}.tmp3.gp {output}.tmp.gtf
+        """
+
 
 
 rule bam_star:
@@ -294,6 +314,20 @@ rule exons2CDS:
         """
         {SCRIPT_PATH}/filter-gtf -p "INPUT {input} OUTPUT {output}" /opt/assembly-scripts/about/add_cds.about genome.fa
         """
+
+# gtf should be sorted in the same order as genome.fa
+# multiple orfs up to {value} of longest
+# e.g. for value=0.75, 75% of longest
+rule exons2CDS_multi:
+    input:
+        "{name}-exons.gtf"
+    output:
+        "{name}-CDS_multi{value}.gtf"
+    shell:
+        """
+        {SCRIPT_PATH}/filter-gtf -p "INPUT {input} OUTPUT {output} FRACTION1 {wildcards.value} FRACTION2 0.25" {SCRIPT_PATH}/about/add_cds_multi.about genome.fa
+        """
+
 
 # list of supported transcripts for training
 rule supported_by_transcripts:
