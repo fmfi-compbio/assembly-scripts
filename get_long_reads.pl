@@ -141,7 +141,7 @@ sub parse_format_line {
     my @parts = split " ", $line;
     return undef if @parts==0;
 
-    die unless scalar(@parts)==scalar(@$keys);
+    die "Bad line $line" unless scalar(@parts)>=scalar(@$keys);
     
     my %rec;
     @rec{@$keys} = @parts;
