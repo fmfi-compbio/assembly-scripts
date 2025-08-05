@@ -11,7 +11,7 @@ i.e. -1 means end of sequence.
 die $USAGE unless @ARGV>=4 && @ARGV<=6;
 
 my ($fasta, $contig, $start, $end, $strand, $name) = @ARGV;
-die unless -r $fasta;
+die "Cannot find file \"$fasta\"" unless -r $fasta;
 
 if(!defined $strand) { $strand = '+'; }
 die "Bad strand '$strand'" unless $strand=~/^[+-]$/;
