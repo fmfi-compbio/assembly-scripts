@@ -242,8 +242,6 @@ rule blastx:
         rm {output}.tmp2
         """
 
-
-
 # create a more readable version of a paf file
 rule minimap_view:
     input:
@@ -265,6 +263,20 @@ rule minimap_gz_view:
         """
         zcat {input} | perl -lane '$id=sprintf("%.1f", $F[9]*100/$F[10]); print join("\\t", @F[9,4,0..3,5..8],$id)' > {output}
         """
+
+# convert paf.view to bed
+# from paf.view alignment file in which special sequences of interest
+# were used as db and genome as query
+# create a bed file for the genome containing name of special sequence
+# together with % coverage and  %id; number of matches are used as score
+rule paf_view_bed:
+    input: "{name}.paf.view"
+    output: "{name}.paf.bed"
+    shell:
+      """
+      perl -lane '$cov=sprintf "%.1f", ($F[9]-$F[8])*100/$F[7]; $n=join("_", $F[6], "cov".$cov, "id".$F[10]); print join("\t", @F[2,4,5],$n,@F[0,1])' {input} | sort -k1,1 -k2g > {output}
+      """
+
 
 # nanopore aligned by minimap
 rule Nanopore_minimap_bam:
@@ -325,7 +337,7 @@ rule bedgraph_to_bw:
         rm {output}.tmp
         """
 
-rule bedgrap_to_lowcov:
+rule bedgraph_to_lowcov:
     input:
          bedgraph="{name}.bedgraph"
     output:
@@ -485,6 +497,19 @@ rule reduce_atom_sequences:
         perl -lane 'my @G; $o=""; push @F, "X"; foreach $f (@F) {{ if($f eq $o) {{ $n++; }} else {{ if($n>1) {{ $o.="X".$n; }} push @G, $o; $n=1; $o=$f; }} }}; print join(" ", @G);' {input} > {output}
         """
 
+# reverting atomGaps sequences can be used
+# for normalizing them to one direction
+rule revert_atomGaps_sequences:
+    input:
+         "{name}.atomGaps"
+    output:
+         "{name}.atomGapsRC"
+    shell:
+        """
+        perl -lane '$n=shift @F; $n.="RC"; @F = reverse(@F); foreach $f (@F) {{if($f=~/\\+$/) {{$f=~s/\\+$/-/ or die; }} elsif ($f=~/\\-$/) {{ $f=~s/\\-$/+/ or die; }} else {{ die unless $f=~/^[0-9-]+$/; }} }} print join(" ", $n, @F); ' {input} > {output}
+        """
+
+
 # reverting atom sequences can be used
 # for normalizing them to one direction
 rule revert_atom_sequences:
@@ -495,6 +520,29 @@ rule revert_atom_sequences:
     shell:
         """
         perl -lane '$n=shift @F; $n.="RC"; @F = reverse(@F); foreach $f (@F) {{if($f=~/\\+$/) {{$f=~s/\\+$/-/ or die; }} else {{ $f=~s/\\-$/+/ or die; }} }} print join(" ", $n, @F); ' {input} > {output}
+        """
+
+# combining both directions of atoms
+rule combine_atom_sequences:
+    input:
+         "{name}.atoms", "{name}.atomsRC"
+    output:
+         "{name}.atomsBoth"
+    shell:
+        """
+	cat {input} | sort > {output}
+        """
+
+
+# combining both directions of atom gaps
+rule combine_atom_gaps:
+    input:
+         "{name}.atomGaps", "{name}.atomGapsRC"
+    output:
+         "{name}.atomGapsBoth"
+    shell:
+        """
+	cat {input} | sort > {output}
         """
 
 
