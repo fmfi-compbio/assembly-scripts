@@ -1,12 +1,8 @@
 #! /usr/bin/perl -w
 
 use strict;
-#use lib "/projects/eh/bin/";
-#use shared;
 use Getopt::Std;
 use Data::Dumper;
-
-#my $BIN = "/projects2/dipMag/bin";
 
 my $USAGE = "$0 [-v] [-f] [-r] contig coord sign max_gap min_aln min_free len_free len_aln < psl > bed
 
