@@ -878,8 +878,8 @@ rule kmer_bedgraph:
    output: "{name}-kmers{K,[0-9]+}.bedgraph"
    shell:
       """
-      {SCRIPT_PATH}/find_kmers.pl 21 < {input} | sort --buffer-size=1G | uniq -c > {output}.tmp1
-      {SCRIPT_PATH}/find_kmers.pl -b 21 < {input} | sort --buffer-size=1G -k4 > {output}.tmp2
+      {SCRIPT_PATH}/find_kmers.pl {wildcards.K} < {input} | sort --buffer-size=1G | uniq -c > {output}.tmp1
+      {SCRIPT_PATH}/find_kmers.pl -b {wildcards.K} < {input} | sort --buffer-size=1G -k4 > {output}.tmp2
       join -1 2 -2 4 {output}.tmp1 {output}.tmp2 | perl -lane 'print join("\\t", @F[2,3,4,1])' | sort --buffer-size=1G -k1,1 -k2,2g > {output}
       rm {output}.tmp1 {output}.tmp2
       """
