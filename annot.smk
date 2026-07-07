@@ -22,26 +22,18 @@ rule rna_trim:
         fq1="{rnaseq}_1.fastq.gz",  fq2="{rnaseq}_2.fastq.gz"
     output:
         t1="{rnaseq}_trimmed_1.fastq.gz", t2="{rnaseq}_trimmed_2.fastq.gz",
-        u="{rnaseq}_trimmed_u.fastq.gz", u2="{rnaseq}_trimmed_u2.fastq.gz",
-        log="{rnaseq}_trimmed_1.fastq.log"
-    params:
-        t1="{rnaseq}_trimmed_1.fastq", t2="{rnaseq}_trimmed_2.fastq",
-        u="{rnaseq}_trimmed_u.fastq", u2="{rnaseq}_trimmed_u2.fastq",
-        temp1="{rnaseq}_tmp_1.fastq", temp2="{rnaseq}_tmp_2.fastq"
+        log="{rnaseq}_trimmed_1.fastq.log", json="{rnaseq}_trimmed_1.fastq.json",
+        html="{rnaseq}_trimmed_1.fastq.html"
     shell:
         """
-        zcat {input.fq1} > {params.temp1}
-        zcat {input.fq2} > {params.temp2}
-        trimmomatic PE {params.temp1} {params.temp2} {params.t1} {params.u} {params.t2} {params.u2} {TRIMMOMATIC_OPT} 2> {output.log}
-        rm {params.temp1} {params.temp2}
-        gzip {params.t1} {params.u} {params.t2} {params.u2}
+        fastp -i {input.fq1} -I {input.fq2} -o {output.t1} -O {output.t2} -j {output.json} -h {output.html} &>  {output.log}
         """
 
 rule trinity_paired:
     input:
         fq1="{rnaseq}_trimmed_1.fastq.gz", fq2="{rnaseq}_trimmed_2.fastq.gz"
     output:
-        fa="{rnaseq}_tr_paired.fa", map="{rnaseq}_tr_paired.gene_trans_map"
+        fa="{rnaseq}_tr.fa", map="{rnaseq}_tr.gene_trans_map"
     params:
         tmp = "{rnaseq}_tmp_trinityp", log="{rnaseq}_tr_paired.log"
     shell:
@@ -50,32 +42,6 @@ rule trinity_paired:
         Trinity {TRINITY_OPT} {TRINITY_OPT_PAIRS} --seqType fq --left {input.fq1} --right {input.fq2} --full_cleanup --output {params.tmp}
         mv {params.tmp}.Trinity.fasta {output.fa}
         mv {params.tmp}.Trinity.fasta.gene_trans_map {output.map}
-        """
-
-rule trinity_single:
-    input:
-        fq="{rnaseq}_trimmed_u.fastq.gz"
-    output:
-        fa="{rnaseq}_tr_single.fa", map="{rnaseq}_tr_single.gene_trans_map"
-    params:
-        tmp = "{rnaseq}_tmp_trinitys", log="{rnaseq}_tr_single.log"
-    shell:
-        """
-        Trinity --version > {params.log}
-        Trinity {TRINITY_OPT} --seqType fq --single {input.fq} --full_cleanup --output {params.tmp}
-        mv {params.tmp}.Trinity.fasta {output.fa}
-        mv {params.tmp}.Trinity.fasta.gene_trans_map {output.map}
-        """
-
-rule transcripts:
-    input:
-        fa1="{rnaseq}_tr_paired.fa", fa2="{rnaseq}_tr_single.fa"
-    output:
-        fa="{rnaseq}_tr.fa"
-    shell:
-        """
-        perl -ne 's/>TRINITY/>TRINITYP/; print' {input.fa1} > {output.fa}
-        perl -ne 's/>TRINITY/>TRINITYS/; print' {input.fa2} >> {output.fa}
         """
 
 rule transcripts_blat:
@@ -151,7 +117,7 @@ rule transcripts_orfs_multi:
 
 rule bam_star:
     input:
-       fq1="{rnaseq}_trimmed_1.fastq.gz", fq2="{rnaseq}_trimmed_2.fastq.gz",fqu="{rnaseq}_trimmed_u.fastq.gz", genome="genome.fa"
+       fq1="{rnaseq}_trimmed_1.fastq.gz", fq2="{rnaseq}_trimmed_2.fastq.gz",genome="genome.fa"
     output:
        bam="{rnaseq}_trimmed.bam"
     params:
@@ -162,15 +128,11 @@ rule bam_star:
         mkdir {params.index}
         STAR {STAR_OPT} --runMode genomeGenerate --genomeDir {params.index} --genomeFastaFiles {input.genome}  --genomeSAindexNbases 11
     	STAR {STAR_OPT} {STAR_OPT2} --genomeDir {params.index} --alignIntronMax {MAX_INTRON} --readFilesIn {input.fq1} {input.fq2} --outFileNamePrefix {params.prefix} e --readFilesCommand zcat
-    	STAR {STAR_OPT} {STAR_OPT2} --genomeDir {params.index} --alignIntronMax {MAX_INTRON} --readFilesIn {input.fqu} --outFileNamePrefix {params.prefix}u- e --readFilesCommand zcat
     	rm -r {params.index}
-    	rm {params.prefix}Log.progress.out {params.prefix}u-Log.progress.out
+    	rm {params.prefix}Log.progress.out
         # -F 260 uses only primary alignments
-    	samtools view -b -F 260 -m {STAR_MIN_MATCH} {params.prefix}Aligned.out.sam | samtools sort > {params.prefix}1.bam
-    	samtools view -b -F 260 -m {STAR_MIN_MATCH} {params.prefix}u-Aligned.out.sam | samtools sort > {params.prefix}2.bam
-    	rm {params.prefix}Aligned.out.sam {params.prefix}u-Aligned.out.sam
-    	samtools merge {output.bam} {params.prefix}1.bam {params.prefix}2.bam
-    	rm {params.prefix}1.bam {params.prefix}2.bam
+    	samtools view -b -F 260 -m {STAR_MIN_MATCH} {params.prefix}Aligned.out.sam | samtools sort > {output.bam}
+    	rm {params.prefix}Aligned.out.sam 
     	samtools index {output.bam}
         """
 
