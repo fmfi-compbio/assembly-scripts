@@ -410,6 +410,16 @@ rule uniprot2simplify:
 	perl -lne 'if(/>/) {{ s/>\\S+\\|(\\S+)\\|\\S+ />$1 / or die; }} print' {input.fa} > {output.fa}
 	"""
 
+# from uniprot fasta create a tsv file with id, gene_id, description
+rule uniprot2tsv:
+    input:
+        fa="{name}Uniprot-prot.fa"
+    output:
+        tsv="{name}Uniprot-prot.tsv"
+    shell:
+        """
+	perl -lne 'if(/>/) {{ /^>(\\S+) (.*) OS=.* GN=(\\S+)\\s.*$/ or die; print join("\\t", $1, $3, $2) }}' {input.fa} | sort -k1,1 > {output.tsv}
+	"""
 
 # convert uniprot fasta to fasta with gene names
 #  commas in gene names will be changed to __
@@ -491,7 +501,7 @@ rule blastp:
 # reduce blast results
 rule reduce_blast:
     input: "{name}.blast"
-    output: "{name}-reduced{id}-{best}.blast"
+    output: "{name}-reduced{id}-{best,[0-9.]+}.blast"
     shell:
       """
       # filter those with matches less than [id] fraction of length of both query and target
@@ -501,6 +511,16 @@ rule reduce_blast:
       sort -k7,7 -k12gr {output}.tmp2 | perl -lane 'if($F[6] eq $o) {{ next unless $F[11]>={wildcards.best}*$m; }} else {{$o = $F[6]; $m=$F[11]; }} print ' > {output}
       wc -l {input} {output}.tmp {output}.tmp2 {output} > {output}.log
       rm {output}.tmp {output}.tmp2
+      """
+
+# reduce blast results
+rule match1_blast:
+    input: "{name1}-BLASTP-{name2}.tsv"
+    output: "{name1}-BLASTP-{name2}-1match.tsv"
+    shell:
+      """
+      perl -le 'print join("\\t", qw/query query_len target target_len matches num_aln_query num_aln_target/)' > {output}
+      perl -lane '$n=scalar(@F); die unless $n>=4 && $n%2==0; $matches=($n-2)/2; @p=split ";", $F[3]; die unless @p==3; print join("\\t", @F[0,1,2], @p[0,1], $matches, $p[2])' {input} >> {output}
       """
 
 
@@ -513,12 +533,30 @@ rule blast_table:
     output: "{name}.tsv"
     shell:
       """
+      # get counts of targets
       perl -lane 'print $F[2]' {input} | sort | uniq -c | sort -k2 > {output}.tmp
+      # sort by target to join counts in
       sort -k3,3 {input} > {output}.tmp2
-      join -1 2 -2 3 {output}.tmp {output}.tmp2 | perl -lane 'print join("\t", @F[7,8,0], join(";", @F[4,2,1]))' | sort > {output}.tmp3
+      # join and select appropriate columns; keep score for now for sorting targets for each query
+      join -1 2 -2 3 {output}.tmp {output}.tmp2 | perl -lane 'print join("\\t", @F[7,8,0], join(";", @F[4,2,1]), $F[12])' | sort -k1,1 -k5gr > {output}.tmp3
       perl -lane 'if($.==1 || $F[0] ne $o) {{ print "" if $.>1; printf "%s\\t\\%d", $F[0], $F[1]; }} printf "\\t%s\\t%s", $F[2], $F[3]; $o=$F[0]; END {{ print "" }} ' {output}.tmp3 > {output}
       rm {output}.tmp {output}.tmp2 {output}.tmp3
-     """ 
+     """
+
+# add gene names
+rule match1_ext_blast:
+    input: tsv="{name1}-BLASTP-{name2}Uniprot-prot{name3}1match.tsv", genes="{name2}Uniprot-prot.tsv"
+    output: "{name1}-BLASTP-{name2}Uniprot-prot{name3}1match-ext.tsv"
+    shell:
+      """
+      # sort our table for join with gene names, skip header
+      tail -n +2 {input.tsv} | sort -k3,3 > {output}.tmp1
+      # create header
+      head -n 1 {input.tsv} | perl -lne 'print join("\\t", $_, "gene", "description")' > {output}
+      # join our table with gene table, change order of columns and sort with query id
+      join -1 3 -t $'\\t' {output}.tmp1 {input.genes} | perl -F'"\\t"' -lane 'die unless scalar @F==9; print join("\\t", @F[1,2,0,3..8])' | sort -k1,1 >> {output}
+      rm {output}.tmp1
+      """
 
 # from paf.view alignment file in which special sequences of interest
 # were used as db and genome as query
