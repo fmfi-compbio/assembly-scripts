@@ -6,7 +6,7 @@ BLASTN_OPT = "-evalue 1e-5 -num_alignments 10000 -num_threads 4"
 SAMPLE_SEED = 42
 SCRIPT_PATH = "/opt/assembly-scripts"
 
-# run flye assembler on nanopore data
+# run flye assembler on R9 nanopore data
 rule flye:
     input:
         "{genome}-N.fastq.gz"
@@ -22,6 +22,24 @@ rule flye:
         mv {output.fa}.tmp/assembly_graph.gfa {output.fa}.assembly_graph.gfa
         gzip {output.fa}.assembly_graph.gfa
         """
+
+# run flye assembler on high quality (R10) nanopore data
+rule flyeHq:
+    input:
+        "{genome}-N.fastq.gz"
+    output:
+        fa="{genome}-flyeHq.fa", log="{genome}-flye.fa.log"
+    shell:
+        """
+        flye --version > {output.log}
+        flye {FLYE_OPT} --nano-hq {input} --out-dir {output.fa}.tmp 2>> {output.log}
+        mv {output.fa}.tmp/assembly.fasta {output.fa}
+        mv {output.fa}.tmp/assembly_info.txt {output.fa}.assembly_info.txt
+        mv {output.fa}.tmp/assembly_graph.gv {output.fa}.assembly_graph.gv
+        mv {output.fa}.tmp/assembly_graph.gfa {output.fa}.assembly_graph.gfa
+        gzip {output.fa}.assembly_graph.gfa
+        """
+
 
 # run miniasm assembler on nanopore data
 rule miniasm:
