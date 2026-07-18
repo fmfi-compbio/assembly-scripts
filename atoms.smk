@@ -189,8 +189,7 @@ rule get_atom_seq:
      output: atoms="{group}-atoms-dir/{name}/atoms.txt"
      shell:
        """
-       grep -E -f {input.txt} -o {input.atoms} > {output.atoms}
-       # || true
+       grep -E -f {input.txt} -o {input.atoms} > {output.atoms} || true
        """
 
 rule get_atom_prefixes:
@@ -210,21 +209,30 @@ rule get_atom_prefix_counts:
        """
 
 
+rule atomas_one_done:
+     input: "{group}-atoms-dir/{name}/atoms-prefixes-counts.txt"
+     output: "{group}-atoms-dir/{name}/done",
+     shell:
+        """
+	touch {output}
+	"""
+
+
 
 #############
-
 #
 # 
 
 def assembly_done_inputs(wildcards):
-    dir = wildcards.group + "-atomassembly-dir"
+    dir = wildcards.group + "-atom" + wildcards.suffix + "-dir"
     IDS, = glob_wildcards(dir + "/{id}-subdir/")
     return expand(dir + "/{id}-subdir/done", id=IDS)
     
 
+#use with suffix s (-atoms) or assembly (-atomassembly)
 rule assembly_done_all:
      input: assembly_done_inputs
-     output: "{group}-atomassembly-dir/done"
+     output: "{group}-atom{suffix}-dir/done"
      shell:
         """
 	echo {input}
