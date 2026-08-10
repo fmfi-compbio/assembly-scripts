@@ -814,6 +814,17 @@ rule kmer_bedgraph:
       rm {output}.tmp1 {output}.tmp2
       """
 
+# table with groups of equal kmers of size at least 2
+rule kmer_equals:
+   input: "{name}.fa"
+   output: "{name}-kmers{K,[0-9]+}.tsv"
+   shell:
+      """
+      /opt/assembly-scripts/find_kmers.pl -s 50 < {input} | sort --buffer-size=1G | perl -lane 'BEGIN {{ @a=(); $o=""; }} if($F[0] ne $o) {{ if(@a>1) {{ print join("\t", @a); }} @a=(); }} push @a, "$F[1]:$F[2]$F[3]"; $o=$F[0]; END {{ if(@a>1) {{ print join("\\t", @a); }} }} ' > {output}.tmp
+      perl -lane '@F = sort @F; if($F[0]=~/-$/) {{ foreach $f (@F) {{ substr($f,-1,1)=~tr/+-/-+/; }} }} print join("\\t", @F)' {output}.tmp > {output}
+      rm {output}.tmp 
+      """
+
 # create sliding windows, keep only full-length ones
 # (except for full sequence of too short)
 rule windows:

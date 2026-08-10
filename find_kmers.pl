@@ -10,8 +10,8 @@ use POSIX;
 
 my $USAGE = "$0 [options] k < fasta > kmers
 
-Print canonical versions of all k-mers in a set fo sequences.
-Argument k is the length of the k-mer, preferable odd number.
+Print canonical versions of all k-mers in a set of sequences.
+Argument k is the length of the k-mer, preferably an odd number.
 K-mers containing N are skipped, only A,C,G,T,N are allowed in sequences.
 
 -c  consider sequences in fasta as circular (e.g. mtDNA or tandem repeat motifs)
@@ -20,11 +20,12 @@ Output format
 
 default: just list of k-mers
 -e  extended: canonical k-mer, original kmer, chromosome, start pos
+-s  with strand: canonical k-mer, chromosome, start pos, strand (+/-, - if canonical not equal original)
 -b  write kmers in bed format with middle position, valid only for linear
 ";
 
 my %Options;
-getopts('cbe', \%Options);
+getopts('cbes', \%Options);
 
 die $USAGE  unless @ARGV==1;
 my ($K) = @ARGV;
@@ -59,8 +60,10 @@ while(1) {
 	# find alphabetically smaller from kmer and its reverse complement
 	my $kmer2 = reverse($kmer);
 	$kmer2=~tr/ACGT/TGCA/;
+	my $strand = "+";
 	if($kmer le $kmer2) {
 	    $kmer2=$kmer;
+	    $strand = "-";
 	}
 	# $kmer is original, $kmer2 is canonical
 	if(exists $Options{'e'}) {
@@ -68,10 +71,10 @@ while(1) {
 	} elsif(exists $Options{'b'}) {
 	    my $middle = POSIX::floor($i+$K/2);
 	    print join("\t", $name, $middle, $middle+1, $kmer2), "\n";
+	} elsif(exists $Options{'s'}) {
+	    print join("\t", $kmer2, $name, $i, $strand), "\n";
 	} else {
 	    print $kmer2, "\n";
 	}
     }
-    
-    
 }
