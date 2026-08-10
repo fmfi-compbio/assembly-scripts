@@ -126,6 +126,18 @@ rule pilon_unconfirmed:
          wigToBigWig {input.dir}/pilonUnconfirmed.wig {input.sizes} {output}
          """
 
+ruleorder: pilon_unconfirmed > bedgraph_to_bw
+rule pilon_unconfirmed_bed:
+     input:
+        "{assembly}-unconfirmed.bw"
+     output:
+        "{assembly}-unconfirmed.bed"
+     shell:
+         """
+	 bigWigToBedGraph {input} stdout | perl -lane 'print if $F[3] eq 1' > {output}
+         """
+
+
 # racon any assembly
 rule racon:
     input:

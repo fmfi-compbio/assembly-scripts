@@ -50,6 +50,18 @@ rule minimap_view:
         """
         perl -lane '$id=sprintf("%.1f", $F[9]*100/$F[10]); print join("\\t", @F[9,4,0..3,5..8],$id)' {input} > {output}
         """
+# convert paf.view to bed
+# from paf.view alignment file in which special sequences of interest
+# were used as db and genome as query
+# create a bed file for the genome containing name of special sequence
+# together with % coverage and  %id; number of matches are used as score
+rule paf_view_bed:
+    input: "{name}.paf.view"
+    output: "{name}.paf.bed"
+    shell:
+      """
+      perl -lane '$cov=sprintf "%.1f", ($F[9]-$F[8])*100/$F[7]; $n=join("_", $F[6], "cov".$cov, "id".$F[10]); print join("\t", @F[2,4,5],$n,@F[0,1])' {input} | sort -k1,1 -k2g > {output}
+      """
 
 rule atom_filter:
      input: "{name}-Na.paf.view"
