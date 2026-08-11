@@ -228,6 +228,48 @@ rule au_tr:
         augustus {config[AUGUSTUS_OPT]} --uniqueGeneId=true --AUGUSTUS_CONFIG_PATH=$DIR --species=$SP --hintsfile={input.hints} --extrinsicCfgFile={config[AUGUSTUS_DIR]}/config/extrinsic/extrinsic.ME.cfg {input.fa} > {output}
         """
 
+# augustus without hints
+rule au_plain:
+    input:
+        fa="genome.fa", cfg="au-{cfg}.cfg"
+    output:
+        gtf="au-{cfg}-plain.orig.gtf"
+    shell:
+        """
+        export SP=`head -n 1 {input.cfg}`
+        export DIR=`head -n 2 {input.cfg} | tail -n 1`
+        echo "SP:$SP  DIR:$DIR"
+        augustus {config[AUGUSTUS_OPT]} --uniqueGeneId=true --AUGUSTUS_CONFIG_PATH=$DIR --species=$SP {input.fa} > {output}
+        """
+
+# prepare miniprot hints
+rule au_minniprot:
+    input:
+        fa="genome.fa", gtf="miniprot.hints-prot.gtf"
+    output:
+        gtf="miniprot.hints.gff"
+    shell:
+        """
+	sort -k1,1 -k4g {input.gtf} > {output}.tmp1
+        {SCRIPT_PATH}/filter-gtf -p "INPUT {output}.tmp1 OUTPUT {output}.tmp2" /opt/assembly-scripts/about/add_introns.about {input.fa}
+	perl -F'"\\t"' -lane 'die $_ unless $F[8] =~ /id "([^"]+)";/; $id="src=P;grp=$1;pri=4"; if($F[2] eq "CDS") {{ $F[3]+=15; $F[4]-=15; next if $F[4]<$F[3]; $F[2] = "CDSpart"; }} if($F[2]=~/^(CDSpart|intron)$/) {{ print join("\\t", @F[0..7], $id) }} '   {output}.tmp2 > {output}.tmp3
+	sort -k1,1 -k4g {output}.tmp3 > {output}
+	rm {output}.tmp1 {output}.tmp2 {output}.tmp3
+        """
+
+rule au_p:
+    input:
+        fa="genome.fa", hints="miniprot.hints.gff", cfg="au-{cfg}.cfg"
+    output:
+        gtf="au-{cfg}-p.orig.gtf"
+    shell:
+        """
+        export SP=`head -n 1 {input.cfg}`
+        export DIR=`head -n 2 {input.cfg} | tail -n 1`
+        echo "SP:$SP  DIR:$DIR"
+        augustus {config[AUGUSTUS_OPT]} --uniqueGeneId=true --AUGUSTUS_CONFIG_PATH=$DIR --species=$SP --hintsfile={input.hints} --extrinsicCfgFile={config[AUGUSTUS_DIR]}/config/extrinsic/extrinsic.MP.cfg {input.fa} > {output}
+        """
+
 rule au_gp:
     input:
         "au-{name}.orig.gtf"

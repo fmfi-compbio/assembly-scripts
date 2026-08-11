@@ -1,0 +1,12 @@
+option gtf_input_file INPUT
+filter read_gtf
+
+option maximum_informant_overlap -1
+option maximum_informant_gap -1
+
+filter add_introns
+
+filter compute_coverage
+
+option gtf_output_file OUTPUT
+filter write_gtf
