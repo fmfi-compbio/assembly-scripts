@@ -1,0 +1,30 @@
+# default options
+# To change these options
+# (1) create a separate yaml with just the new versions,
+#     use --configfile arguments
+# (2) override just one option with --config
+#
+# todo: redo augustus configs with yaml, add defaults here
+
+MAX_INTRON: "5000"
+GENETIC_CODE: 1
+
+TRINITY_OPT: "--max_memory 40G --CPU 8"
+TRINITY_OPT_PAIRS: ""
+# default non-stranded; see https://rnabio.org/module-09-appendix/0009/12/01/StrandSettings/
+
+CDNAFILTER_OPT: "-minId=0.95 -minCover=0.75 -globalNearBest=0"
+
+STAR_OPT: "--runThreadN 4"
+STAR_OPT2: "--outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 0 --outFilterMismatchNmax 2"
+STAR_MIN_MATCH: 30
+
+RFAM_OPT: "--cpu 6"
+
+AUGUSTUS_DIR: "/usr/local/share/augustus-3.2.3/augustus-3.2.3"
+AUGUSTUS_OPT: "--alternatives-from-evidence=false --alternatives-from-sampling=false"
+AUGUSTUS_TRAIN_UTR: 1000
+AUGUSTUS_TRAIN_PROT_ID: 0.7
+
+MINIPROT_OPT: "-t4 -j1"  # j1 is non-mammalian splice sites
+BLASTP_OPT: "-evalue 1e-5 -num_alignments 10000 -num_threads 4"
