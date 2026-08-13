@@ -21,11 +21,14 @@ rule gather_bad:
     """
     # find genes with stop codons
     cat {input.protN} {input.protM} | \
-    grep -E '>|\*' | grep -B 1 '\*' | grep '>' | perl -lne 's/^>// or die; print' > {output}.tmp
+    grep -E '>|\\*' | grep -B 1 '\\*' | grep '>' | perl -lne 's/^>// or die; print' > {output}.tmp.stop
     # find mt genes in nucl
-    perl -lane 'if ($F[0] eq "{params.mtDNA}") {{ die unless /transcript_id \\\"([^\\"]+)\\"/; print $1; }} ' {input.gtfN} >> {output}.tmp
-    sort -u {output}.tmp > {output}
-    rm {output}.tmp
+    perl -lane 'if ($F[0] eq "{params.mtDNA}") {{ die unless /transcript_id \\\"([^\\"]+)\\"/; print $1; }} ' {input.gtfN} | sort -u > {output}.tmp.mt
+    cat {output}.tmp.stop {output}.tmp.mt | sort -u > {output}
+    wc -l {output}.tmp.stop {output}.tmp.mt {output} > {output}.log
+    rm {output}.tmp.stop {output}.tmp.mt
+    echo "Stats:"
+    cat {output}.log
     """
 
 rule rename_genes:
@@ -171,7 +174,7 @@ rule manual_prot:
     echo "Counts of nucl. and mt. genes:" > {output.log}
     grep -c '>' {output.prot}.tmp.nucl.cdna {output.prot}.tmp.mt.cdna >> {output.log} || true
     echo "In frame stop codons:" >> {output.log}
-    grep -E '>|\*' {output.prot}  | grep -v '>' -B 1 | grep '>' | perl -lne 's/>//; print' | sort >> {output.log} || true
+    grep -E '>|\\*' {output.prot}  | grep -v '>' -B 1 | grep '>' | perl -lne 's/>//; print' | sort >> {output.log} || true
     head -n 30 {output.log}
 
     rm {output.prot}.tmp.nucl.cdna  {output.prot}.tmp.mt.cdna {output.prot}.tmp.nucl.prot {output.prot}.tmp.mt.prot {output.prot}.tmp.mt.gtf {output.prot}.tmp.nucl.gtf
