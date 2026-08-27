@@ -8,6 +8,90 @@ MT = config["mt"]
 NAME = config["name"]
 OMIT = config["omit"]
 
+
+if "for_manual" in config:
+   FOR_MANUAL = expand("for_manual/{name}-NOUTR.gp", name=config["for_manual"])
+else:
+   FOR_MANUAL = ["for_manual/ADD_TO_YAML-NOUTR.gp"]
+
+if "browser_url" in config:
+   BROWSER_URL = config["browser_url"]
+else:
+   BROWSER_URL = ""
+
+rule init_for_manual:
+  input:
+  output: "for_manual/init"
+  shell:
+    """
+    mkdir -p for_manual
+    touch {output}
+    """
+    
+rule combine_for_manual:
+  input: FOR_MANUAL
+  output: "for_manual/combined.gp"
+  shell:
+    """
+    # concat in the order as in yaml
+    cat {input} > {output}
+    """
+
+# output columns:
+# 0:id,
+# 1:num prefixes 2:num overlapping prefixes
+# 3:num extended prefixes 4:num overlapping prefixes
+# 5:num transcript ids 6:num overlapping tr ids
+# 7:locus
+# 8:prefixes 9:overlapping prefixes
+# 10:extended prefixes (space sep.) 11:overlapping prefixes
+# 12:transcript ids 13:overlapping tr ids
+rule compare_for_manual:
+  input: gp="for_manual/combined.gp", sizes="genome.sizes"
+  output: "for_manual/combined.tsv"
+  shell:
+    """
+    python3 {SCRIPT_PATH}/compare-genepred.py {input.gp} {input.sizes} > {output}
+    """
+
+rule for_manual_tsv:
+  input: f1="for_manual/sel_col1.tsv", f2="for_manual/sel_col2.tsv"
+  output: "for_manual/for_manual.tsv"
+  shell:
+    """
+    # header
+    perl -le 'print join("\t", qw/gene1 gene1_status gene2 gene2_status note locus other_overlaps/)' > {output}
+    # base annot genes in first columns
+    perl -F'"\\t"' -lane '@a=split " ", $F[13]; print join("\\t", $F[0], ".", ".", ".", ".", "{BROWSER_URL}" . $F[7], @a);' {input.f1} > {output}.tmp
+    # other potential genes in second columns
+    perl -F'"\\t"' -lane '@a=split " ", $F[13]; print join("\\t", ".", ".", $F[0], ".", ".", "{BROWSER_URL}" . $F[7], @a);' {input.f2} >> {output}.tmp
+    # sort by position and add
+    sort -k6V {output}.tmp >> {output}
+    rm {output}.tmp
+    """
+
+rule rename_for_manual:
+  input: gp="{name}.gp", init="for_manual/init"
+  output: r"for_manual/{name}-RENAME-{s1,\w+}-{s2,\w+}.gp"
+  shell:
+    """
+    perl -F'"\\t"' -lane '$F[0] = "{wildcards[s1]}:{wildcards[s2]}:$F[0]"; print join("\\t", @F)' {input.gp} > {output}
+    """
+
+rule noutr_for_manual:
+  input: "for_manual/{name}.gp"
+  output: "for_manual/{name}-NOUTR.gp"
+  shell:
+    """
+    genePredToGtf -honorCdsStat file {input} {output}.tmp.gtf
+    # skip UTR
+    perl -lane 'print if $F[2]=~/^(CDS|start_codon|stop_codon)$/' {output}.tmp.gtf > {output}.tmp2.gtf
+    # convert back to gene pred
+    gtfToGenePred -genePredExt {output}.tmp2.gtf {output}
+    rm {output}.tmp.gtf {output}.tmp2.gtf
+    """
+
+
 rule gather_bad:
   input: 
     gtfN=NUCL + ".gtf",
