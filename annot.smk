@@ -77,11 +77,14 @@ rule transcripts_exons:
         rm {params.tmp_bed} {params.tmp2_bed} {params.tmp_gp} {params.tmp_gtf}
         """
 
-rule transcripts_orfs:
+# after adding CDS with put script,
+# convert to genepred with gp format with orf ending
+# this can be used for transcripts as well as liftoff and miniprot
+rule CDS_orfs_gp:
     input:
-       "{rnaseq}_tr-CDS.gtf"
+       "{name}-CDS.gtf"
     output:
-       "{rnaseq}_tr_orfs.gp"
+       "{name}_orfs.gp"
     shell:
         """
 	gtfToGenePred -genePredExt {input} {output}
@@ -471,8 +474,9 @@ rule uniprot2genes:
 	"""
 
 
-# align proteins by miniprot
-# gtf should be sorted in the same order as genome.fa
+# align proteins by miniprot, see also version producing gp for browser
+# this one is more for gene prediction - adding start and stop
+# gtf should be sorted in the same order as genome.fa but is not
 rule miniprot:
     input:
         fa="genome.fa", faa="{name}-prot.fa"
@@ -482,6 +486,20 @@ rule miniprot:
         """
 	miniprot -G{MAX_INTRON} {config[MINIPROT_OPT]} --gtf {input.fa} {input.faa} > {output}
         """
+
+# prepare miniprot for finding ORFs
+# - keep only exons and sort
+# genome.fa should be sorted alphabetically
+# now rules roducing {name}-prot-CDS.gtf can be applied
+rule miniprot_exons:
+    input:
+        gtf="{name}-prot.gtf"
+    output:
+        gtf="{name}-prot-exons.gtf"
+    shell:
+        """
+	perl -lane 'print if $F[2] eq "exon"' {input} | sort -k1,1 -k4g > {output}
+	"""
 
 # miniprot producing gff3 for later conversion to gp
 rule miniprot2:
@@ -518,6 +536,38 @@ rule miniprot_browser_gp:
 	perl -F'"\\t"' -lane '$F[0]=~s/_c[0-9]+$//; print join("\\t", @F);' {input} > {output}
         """
      
+# map genes to a new genome via liftoff
+rule liftoff:
+    input:
+        gff="{name}-annot.gff", fa="{name}-genome.fa", fa2="genome.fa"
+    output:
+        gtf1="{name}-annot-filtered.gtf", gtf2="{name}-mapped.gtf", txt="{name}-unmapped.txt"
+    shell:
+        """
+        gff3ToGenePred {input.gff} {output.gtf2}.tmp.gp
+	perl -lane 'print if $F[5]<$F[6]' {output.gtf2}.tmp.gp > {output.gtf2}.tmp2.gp  # skip non-coding
+        genePredToGtf file {output.gtf2}.tmp2.gp {output.gtf1}
+	# require 80% coverage and identity, look for additional gene copies
+	liftoff {input.fa2} {input.fa} -g {output.gtf1} -o {output.gtf2} -u {output.txt} -dir {output.gtf2}-tmp -a=0.8 -s=0.8 -flank 0.1 -copies -sc 0.9 -infer_genes
+	echo "Orig genes and after filtering:"
+	wc -l {output.gtf2}.tmp.gp
+	wc -l {output.gtf2}.tmp2.gp
+	echo "Unmapped:"
+	wc -l {output.txt}
+	rm -r {output.gtf2}.tmp.gp {output.gtf2}.tmp2.gp {output.gtf2}-tmp {output.gtf1}_db	
+        """
+
+# from liftoff genes, keep only exons, later add CDS using our script
+rule liftoff_exons:
+    input:
+        gtf="{name}-mapped.gtf"
+    output:
+        gtf="{name}-mapped-exons.gtf"	
+    shell:
+        """
+	perl -lane 's/(transcript_id ")rna-/$1/; print if $F[2] eq "exon"' {input} > {output}
+	"""
+
 
 # compare 2 protein fasta files by BLASTP
 rule blastp:
