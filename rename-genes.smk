@@ -14,10 +14,21 @@ if "for_manual" in config:
 else:
    FOR_MANUAL = ["for_manual/ADD_TO_YAML-NOUTR.gp"]
 
+# additional transcripts should have unique names and no utr
+# otherwise use mechanism here for adding prefixes and removing utr
+if "for_manual_added" in config:
+   FOR_MANUAL_ADDED = expand("for_manual/{name}.gp", name=config["for_manual_added"])
+else:
+   FOR_MANUAL_ADDED = []
+
+FOR_MANUAL_ALL = FOR_MANUAL + FOR_MANUAL_ADDED
+
 if "browser_url" in config:
    BROWSER_URL = config["browser_url"]
 else:
    BROWSER_URL = ""
+
+
 
 rule init_for_manual:
   input:
@@ -36,6 +47,17 @@ rule combine_for_manual:
     # concat in the order as in yaml
     cat {input} > {output}
     """
+
+# also additional (e.g. manual) transcripts added later, if any
+rule combine_for_manual_all:
+  input: FOR_MANUAL_ALL
+  output: "for_manual/combined_all.gp"
+  shell:
+    """
+    # concat in the order as in yaml
+    cat {input} > {output}
+    """
+
 
 # output columns:
 # 0:id,
@@ -75,7 +97,7 @@ rule rename_for_manual:
   output: r"for_manual/{name}-RENAME-{s1,\w+}-{s2,\w+}.gp"
   shell:
     """
-    perl -F'"\\t"' -lane '$F[0] = "{wildcards[s1]}:{wildcards[s2]}:$F[0]"; print join("\\t", @F)' {input.gp} > {output}
+    perl -F'"\\t"' -lane '$F[0] = "{wildcards[s1]}:{wildcards[s2]}:$F[0]"; $F[11] = "{wildcards[s1]}:{wildcards[s2]}:$F[11]"; if($F[0] eq $F[11]) {{ $F[11] .= "TR"; }} print join("\\t", @F)' {input.gp} > {output}
     """
 
 rule noutr_for_manual:
@@ -180,46 +202,54 @@ rule rename_genes:
     """
 
 rule manual_annot:
-  input: tsv="{name}-manual.tsv", gpNew="{name}-manual-new.gp", gpOld="{name}-manual-old.gp"
-  output: gp="{name}-manual.gp", log="{name}-manual.log"
+  input: tsv="manual.tsv", gpBase=FOR_MANUAL[0], gpAll="for_manual/combined_all.gp"
+  output: gp="manual.gp", log="manual.log", add="manual-add.list", rm="manual-rm.list"
   shell:
-    """
-    # check that tsv has no repeated IDs in columns with genes to be removed, added
-    perl -F'"\\t"' -lane 'die "bad space in $_" if $F[0]=~/\\s/ || $F[1]=~/\\s/; print $F[0]; print $F[1]' {input.tsv} | sort | uniq -c | perl -lane 'next if $F[1] eq "KEEP" || $F[1] eq "DELETE" || $F[1] eq "-"; die "repeated id $_" if $F[0]>1'
-    # to remove: from the first column except those marked as KEEP
+    """    
+    # create a new tsv with columns id/., decisions P/M/., group 1(base)/2(other)
+    perl -F'"\\t"' -lane 'if($.==1) {{ die unless $F[0] eq "gene1"; next; }} print join("\\t", @F[0,1], 1); print join("\\t", @F[2,3], 2);'  {input.tsv} > {output.gp}.tmp.tsv
+    # check that all info is filled, omit empty rows, split multiple ids
+    perl -F'"\\t"' -lane 'if($F[0] eq ".") {{ die $_ unless $F[1] eq "."; next; }} die $_ unless $F[1]=~/^[PM]$/; @a = split /[ ,]+/, $F[0]; foreach $x (@a) {{ print join("\\t", $x, $F[1], $F[2]); }}' {output.gp}.tmp.tsv > {output.gp}.tmp2.tsv
+    # check that each ID only one decision
+    perl -lane 'print "$F[0] $F[1]"' {output.gp}.tmp2.tsv | sort | uniq -c | perl -lane 'die $_ if $F[0]>1'
+    # check that all id's are in appropriate files
+    
+    # to remove: from group 1 marked M
     # (add tab after gene name to use in grep)
-    perl -F'"\\t"' -lane 'print $F[0], "\\t" unless $F[1] eq "KEEP" || $F[0] eq "-"' {input.tsv} > {output.gp}.tmp-remove.list
-    # to add: everything in second column except KEEP, DELETE
-    perl -F'"\\t"' -lane 'next if $F[1] eq "KEEP" || $F[1] eq "DELETE"; print $F[1],"\\t"' {input.tsv} > {output.gp}.tmp-add.list
+    perl -F'"\\t"' -lane 'print $F[0], "\\t" if $F[1] eq "M" && $F[2] eq "1"' {output.gp}.tmp2.tsv | sort -u > {output.rm}
+    # to add: from group 2 marked P
+    perl -F'"\\t"' -lane 'print $F[0], "\\t" if $F[1] eq "P" && $F[2] eq "2"' {output.gp}.tmp2.tsv | sort -u > {output.add}
+
+
     # get genes to be added
-    grep -F -f {output.gp}.tmp-add.list {input.gpNew} > {output.gp}.tmp-add.gp || true
+    grep -F -f {output.add} {input.gpAll} > {output.gp}.tmp-add.gp || true
     # get genes not to be removed
-    grep -v -F -f {output.gp}.tmp-remove.list {input.gpOld} > {output.gp}.tmp-remain.gp || true
+    grep -v -F -f {output.rm} {input.gpBase} > {output.gp}.tmp-remain.gp || true
     # join the two files
     cat {output.gp}.tmp-add.gp {output.gp}.tmp-remain.gp | sort -k 2,2 -k4,4g > {output.gp}
     
     # check that transcript IDs are unique
     perl -lane 'print $F[0]' {output.gp} | sort | uniq -c | perl -lane 'die "duplicated id $_" if $F[0]>1'
     # make sure that transcript id and gene id different 
-    perl -lane 'die "identical gen id and transcrit id $_" if $F[0] eq $F[11]' {output.gp}
+    perl -lane 'die "identical gene id and transcript id $_" if $F[0] eq $F[11]' {output.gp}
 
     # count genes
-    echo "Stats" > {output.log}
+    echo "Stats based on tsv" > {output.log}
     echo -n " Remove " >> {output.log}
-    perl -F'"\\t"' -lane 'print if $F[1] eq "REMOVE"' {input.tsv} | wc -l >> {output.log}
+    perl -F'"\\t"' -lane 'print if $F[1] eq "M"' {input.tsv} | wc -l >> {output.log}
     echo -n " Replace " >> {output.log}
-    perl -F'"\\t"' -lane 'print if $F[1] ne "REMOVE" && $F[0] ne "-"' {input.tsv} | wc -l >> {output.log}
+    perl -F'"\\t"' -lane 'print if $F[1] eq "M" && $F[3] eq "P"' {input.tsv} | wc -l >> {output.log}
     echo -n " Add " >> {output.log}
-    perl -F'"\\t"' -lane 'print if $F[1] ne "REMOVE" && $F[0] eq "-"' {input.tsv} | wc -l >> {output.log}
+    perl -F'"\\t"' -lane 'print if $F[1] ne "M" && $F[3] eq "P"' {input.tsv} | wc -l >> {output.log}
 
     echo "Check that the counts are the same for added genes" >> {output.log}
-    wc -l {output.gp}.tmp-add.list {output.gp}.tmp-add.gp >> {output.log}
+    wc -l {output.add} {output.gp}.tmp-add.gp >> {output.log}
 
     echo -n "Incomplete genes among added: " >> {output.log}
     grep -c incmpl {output.gp}.tmp-add.gp >> {output.log} || true
 
     echo "Check counts of remove vs remain vs old total:"  >> {output.log}
-    wc -l {output.gp}.tmp-remove.list {output.gp}.tmp-remain.gp {input.gpOld} >> {output.log}
+    wc -l {output.rm} {output.gp}.tmp-remain.gp {input.gpBase} >> {output.log}
     
     echo -n "New gene count " >> {output.log}
     wc -l {output.gp} >> {output.log}
@@ -228,7 +258,7 @@ rule manual_annot:
 
     overlapSelect -statsOutput -excludeSelf -overlapBases=30 {output.gp} {output.gp} stdout >> {output.log}
 
-    rm {output.gp}.tmp-add.list {output.gp}.tmp-add.gp {output.gp}.tmp-remove.list {output.gp}.tmp-remain.gp
+    rm {output.gp}.tmp-add.gp {output.gp}.tmp-remain.gp manual.gp.tmp2.tsv manual.gp.tmp.tsv
     head -n 30 {output.log}
     """
 
