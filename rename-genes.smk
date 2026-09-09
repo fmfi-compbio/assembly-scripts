@@ -127,7 +127,7 @@ rule gather_bad:
     """
     # find genes with stop codons
     cat {input.protN} {input.protM} | \
-    grep -E '>|\\*' | grep -B 1 '\\*' | grep '>' | perl -lne 's/^>// or die; print' > {output}.tmp.stop
+    perl -lne 'if(/>/) {{ s/^>// or die; $n=$_; }} elsif (/\\*/) {{ print $n; }}' > {output}.tmp.stop
     # find mt genes in nucl
     perl -lane 'if ($F[0] eq "{params.mtDNA}") {{ die unless /transcript_id \\\"([^\\"]+)\\"/; print $1; }} ' {input.gtfN} | sort -u > {output}.tmp.mt
     cat {output}.tmp.stop {output}.tmp.mt | sort -u > {output}
@@ -263,16 +263,16 @@ rule manual_annot:
     """
 
 rule manual_gtf:
-  input: gp="{name}-manual.gp"
-  output: gtf="{name}-manual.gtf"
+  input: gp="manual.gp"
+  output: gtf="manual.gtf"
   shell:
     """
     genePredToGtf -honorCdsStat file {input.gp} {output.gtf}
     """
 
 rule manual_prot:
-  input: gtf="{name}-manual.gtf", fa="genome.fa"
-  output: prot="{name}-manual-prot.fa", cdna="{name}-manual-cdna.fa", log="{name}-manual-prot.fa.log"
+  input: gtf="manual.gtf", fa="genome.fa"
+  output: prot="manual-prot.fa", cdna="manual-cdna.fa", log="manual-prot.fa.log"
   params:
     mtDNA = config.get("mtDNA", "mtDNA"),
     nucl_code = config["nucl_code"],
@@ -295,8 +295,8 @@ rule manual_prot:
     """
 
 rule manual_gff3:
-  input: gtf="{name}-manual.gtf"
-  output: gff3="{name}-manual.gff3"
+  input: gtf="manual.gtf"
+  output: gff3="manual.gff3"
   shell:
     """
     # add stop codons to CDS
