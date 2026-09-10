@@ -1,8 +1,8 @@
 ## Creating UCSC browser files and a manual annotation support
 
-* Create several genepred files with `.gp` extension (various gene predictions, ORFs found in RNA-seq transcripts and va protein homology)
-* For each file select two-level prefix: first prefix puts it into a group, e.g. transcipts and second prefix specifies source within group, e.g. particular RNA-seq
-* Create file `rename-genes.yaml` which contains among others section listig all .gp files without .gp but with RENAME-prefix1-prefix2 added, e.g.
+* Create several genepred files with `.gp` extension (various gene predictions, ORFs found in RNA-seq transcripts and via protein homology)
+* For each file select two-level prefix: first prefix puts it into a group, e.g. transcipts and second prefix specifies the source within group, e.g. particular RNA-seq sample
+* Create file `rename-genes.yaml` which contains among others section listig all `.gp` files without `.gp` but with `RENAME-prefix1-prefix2` added, e.g.
 
 ```yaml
 for_manual:
@@ -15,11 +15,11 @@ for_manual:
 ```
 * The first of these files is considered **base** of the annotation and by default its genes will be kept, with some later marked for removal or other genes marked for addition.
 
-* Also optionally create `browser_url` variable which will be prefixed before postions in the form `chr:start-end`
+* Also optionally create `browser_url` variable which will be prefixed before positions in the form `chr:start-end`
 * Then run `rename-genes for_manual/combined.tsv` 
-* This creates folder for_manual. For each gp it adds 2 versions - one with prefixes added to transcript and gene names and one with also UTR removed. The one with just renaming can be uploaded to the browser. The one without UTRs is used for comparison - transcripts with identical CDS set are considered equivalent even if their UTRs differ.
-* It also concatentates all `NOUTR.gp` files in `combined.gp`
-* Table `for_manual/combined.tsv` contains for each group of equivalent transcripts from comined.gp
+* This creates folder `for_manual`. For each gp it adds 2 versions - one with prefixes added to transcript and gene names and one with also UTR removed. The one with just renaming can be uploaded to the browser. The one without UTRs is used for comparison; transcripts with identical CDS set are considered equivalent even if their UTRs differ.
+* It also concatentates all `NOUTR.gp` files into `combined.gp`
+* Table `for_manual/combined.tsv` contains a row for each group of equivalent transcripts from `combined.gp`
   * 0:selected transcript id (first in the order of precedence given by order in yaml)
   * 1:num prefixes 2:num overlapping prefixes
   * 3:num extended prefixes 4:num overlapping prefixes
@@ -33,6 +33,7 @@ for_manual:
   * `for_manual/sel_col1.tsv` with lines corresponding to base transcripts to be investigated.
   * `for_manual/sel_col2.tsv` with lines corresponding to other transcripts to be investigated.
 
+Example one-liners
 ```bash
 # manual filtration
 # from base annot (prefix FA) take unsupported genes
@@ -45,23 +46,23 @@ perl -F'"\t"' -lane 'print if $F[8]!~/\bFA\b/ && $F[9]!~/\bFA\b/ && $F[1]>1;' fo
 ## Manual annotation
 
 * Upload table `for_manual/for_manual.tsv` to a spreadsheet and edit it
-* Each transcript should have next to it `P`(plus, for keeping or adding it) or `M`(minus for deleting or not adding it)
-* To replace base transcript by another one, add the new transcript to column 3 and `P` or `M` to column 4
+* Each transcript should have next to it `P` (plus, for keeping or adding it) or `M` (minus for deleting or not adding it)
+* To replace a base transcript by another one, add the new transcript to column 3 and `P` or `M` to column 4
 * More rows with the first 4 columns filled can be added
 * Empty fields are marked by a dot
-* Columns with transcript ID (1 and 3) can contain multiple values separated by space or comma
+* Columns with transcript ID (1 and 3) can contain multiple values separated by spaces and/or commas
 * Download the result as `manual.tsv` in the current folder
 
 Optional: manual transcripts
-* If a new transcript should be created for some gene, add it to  a new .gp file in `for_manual` folder. Make sure it already satisfies no UTR and use of a special prefix. Also gene and transcript ids should be distinct form each other
-* Use names of these transcripts in `manual.tsv`
+* If a new transcript should be created for some gene, add it to  a new `.gp` file in `for_manual` folder. Make sure it already satisfies no UTR and use of a special prefix. Also gene and transcript ids should be distinct from each other
+* Use names of these transcripts in `manual.tsv` table
 * Add the name of the file to `rename-genes.yaml` as follows (for file `for_manual/manual-tr.gp`):
 ```yaml
 for_manual_added:
   - manual-tr
 ```
 
-To create the manual annotation when all is done, run `/opt/assembly-scripts/rename-genes manual.gp` and also checked the log for useful stats and potential problems
+To create the manual annotation when all is done, run `/opt/assembly-scripts/rename-genes manual.gp` and also check the log for useful stats and potential problems
 
 ## Renaming
 
@@ -76,7 +77,7 @@ To create the manual annotation when all is done, run `/opt/assembly-scripts/ren
 ```
 
 Example of corresponding part of `rename-genes.yaml`:
-```bash
+```yaml
 # prefix of files with nuclear genes (.gtf and -prof.fa)
 nucl: manual
 
